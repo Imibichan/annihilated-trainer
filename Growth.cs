@@ -24,3 +24,5 @@ public static class GrowthRules {
 }
 public sealed class GrowthUpdate {public Character[] Team;public bool Changed;}
 }
+
+namespace Trainer { public static class RoleRules { public static string Label(string key){switch(key){case "player":return "主角";case "hero":return "勇者";case "warrior":return "战士";case "mage":return "魔法师";case "priest":return "僧侣";default:return "未知角色";}} public static bool ValidSanity(int value){return value>=-20 && value<=100;} } }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Trainer;
 public class GrowthTests {
  public static int Main(){try{
@@ -21,9 +21,9 @@ public class GrowthTests {
   CheckArray((int[])compute.Invoke(null,new object[]{"hero",9,new int[4],true,false,""}),new[]{47,14,13,47},"true hero variant");
   Check((string)Call(t,"BonusKey","mage","Str")=="GPTToolsStat_mage_Str","bonuses follow character identity");
   Check(typeof(Bridge).GetMethod("Apply").GetParameters()[1].ParameterType==typeof(string),"apply must bind to the character shown when clicked");
-  var content=typeof(Remote).GetMethod("IsSupportedContent");Check(content!=null,"growth formula requires verified asset catalog");
-  Check(!(bool)content.Invoke(null,new object[]{"unknown"}),"reject changed formula assets");
-  Check((bool)content.Invoke(null,new object[]{"b9254bd24d0daef581f2186fa1da77c5"}),"accept verified formula assets");
+  var content=typeof(Remote).GetMethod("IsSupportedContent");Check(content!=null,"resource classification API remains available");
+  Check(!(bool)content.Invoke(null,new object[]{"unknown"}),"unlisted resources remain classified as unknown");
+  Check((bool)content.Invoke(null,new object[]{"b9254bd24d0daef581f2186fa1da77c5"}),"recognized resources retain their classification");
   Console.WriteLine("PASS 21 growth assertions");return 0;
  }catch(Exception e){Console.WriteLine("FAIL growth: "+e.Message);return 1;}}
  static object Call(Type t,string n,params object[] a){return t.GetMethod(n).Invoke(null,a);}

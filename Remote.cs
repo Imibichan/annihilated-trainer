@@ -21,9 +21,11 @@ public sealed class Remote : IDisposable {
  public readonly SessionSafety Safety=new SessionSafety();
  static readonly HashSet<string> uncertainProcesses=new HashSet<string>();
  readonly string identity,uncertainMarker;
+ public string GameHash {get;private set;} public string ContentHash {get;private set;} public bool StaticEnvelopeValidated {get;private set;}
+ public bool VerifiedBuild {get{return Compatibility.IsVerifiedPair(GameHash,ContentHash);}} public bool CurrentAnalyzedBuild {get{return Compatibility.IsAnalyzedPair(GameHash,ContentHash);}} public bool KnownBuild {get{return Compatibility.IsKnownBuild(GameHash);}} public bool KnownContent {get{return Compatibility.IsKnownContent(ContentHash);}}
  public bool Faulted{get{return !Safety.MayRelease;}}
- public static bool IsSupportedBuild(string hash){return String.Equals(hash,"38F5ADA37FEC235248A61971C06E4ACCF4C95A74B5C74FCCBE32412AB04C26F1",StringComparison.OrdinalIgnoreCase);}
- public static bool IsSupportedContent(string hash){return String.Equals(hash,"b9254bd24d0daef581f2186fa1da77c5",StringComparison.OrdinalIgnoreCase);}
+ public static bool IsSupportedBuild(string hash){return Compatibility.IsKnownBuild(hash);}
+ public static bool IsSupportedContent(string hash){return Compatibility.IsKnownContent(hash);}
  public void MarkUncertain(){Safety.MarkUncertain();lock(uncertainProcesses)uncertainProcesses.Add(identity);try{File.WriteAllText(uncertainMarker,"Pending runtime call; restart this game process before reconnecting.");}catch{/* The in-process guard remains active. */}}
  [DllImport("kernel32",SetLastError=true)] static extern IntPtr OpenProcess(uint rights,bool inherit,int pid);
  [DllImport("kernel32",SetLastError=true)] static extern bool ReadProcessMemory(IntPtr p,IntPtr a,byte[] b,IntPtr n,out IntPtr done);
@@ -45,11 +47,16 @@ public sealed class Remote : IDisposable {
   try {
    foreach(ProcessModule m in Process.Modules)if(m.ModuleName.Equals("GameAssembly.dll",StringComparison.OrdinalIgnoreCase)){
     GameBase=m.BaseAddress.ToInt64();string hash;using(var sha=SHA256.Create())using(var stream=File.OpenRead(m.FileName))hash=BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","");
-    if(!IsSupportedBuild(hash))throw new Exception("游戏文件与已验证版本不同，可能已经更新，需要重新适配；未执行修改。");
-    string catalog=Path.Combine(Path.GetDirectoryName(m.FileName),"Annihilated_Data","StreamingAssets","aa","catalog.hash");if(!File.Exists(catalog)||!IsSupportedContent(File.ReadAllText(catalog).Trim()))throw new Exception("游戏资源／成长公式版本不同，需要重新适配；未执行修改。");
+    GameHash=hash;string data=Path.Combine(Path.GetDirectoryName(m.FileName),"Annihilated_Data");
+    string catalog=Path.Combine(data,"StreamingAssets","aa","catalog.hash");ContentHash=File.Exists(catalog)?File.ReadAllText(catalog).Trim():"";
+    byte[] pe=Compatibility.Prefix(m.FileName,4096),metadata=Compatibility.Prefix(Path.Combine(data,"il2cpp_data","Metadata","global-metadata.dat"),8);string unity=Compatibility.ReadUnityVersion(Path.Combine(data,"globalgamemanagers"));
+    Compatibility.ValidateStatic(pe,metadata,unity,Compatibility.RequiredExports); // Header/ABI checks before reading the mapped export table.
+    LoadExports();Compatibility.ValidateStatic(pe,metadata,unity,exports.Keys);
+    foreach(string name in Compatibility.RequiredExports){long address=exports[name];if(address<GameBase||address>=GameBase+m.ModuleMemorySize)throw new InvalidDataException("IL2CPP export address outside module: "+name);}
+    StaticEnvelopeValidated=true;
    }
    if(GameBase==0)throw new Exception("尚未加载 GameAssembly.dll。");
-   LoadExports();
+   if(!StaticEnvelopeValidated)throw new InvalidDataException("Static compatibility envelope not validated.");
   }catch{CloseHandle(Handle);throw;}
  }
  public bool Alive {get{try{return !Process.HasExited;}catch{return false;}}}
@@ -67,13 +74,13 @@ public sealed class Remote : IDisposable {
  void LoadExports(){
   int pe=Int(GameBase+0x3c);long nt=GameBase+pe;
   if(Int(GameBase)!=0x00905A4D && (Int(GameBase)&0xffff)!=0x5a4d)throw new Exception("无效模块");
-  int rva=Int(nt+0x88);long dir=GameBase+(uint)rva;
+  int rva=Int(nt+0x88),exportSize=Int(nt+0x8c);if(rva<=0||exportSize<40)throw new InvalidDataException("Invalid export directory.");long dir=GameBase+(uint)rva;int functionCount=Int(dir+20);if(functionCount<1||functionCount>100000)throw new InvalidDataException("Invalid export function count.");
   int count=Int(dir+24);long funcs=GameBase+(uint)Int(dir+28),names=GameBase+(uint)Int(dir+32),ords=GameBase+(uint)Int(dir+36);
   if(count<1||count>10000)throw new Exception("导出表不兼容");
   var nb=Read(names,count*4);var ob=Read(ords,count*2);
   for(int i=0;i<count;i++){
    string name=CString(GameBase+BitConverter.ToUInt32(nb,i*4));int ord=BitConverter.ToUInt16(ob,i*2);
-   exports[name]=GameBase+(uint)Int(funcs+ord*4);
+   if(ord>=functionCount)throw new InvalidDataException("Invalid export ordinal.");uint functionRva=(uint)Int(funcs+ord*4);if(Array.IndexOf(Compatibility.RequiredExports,name)>=0&&(functionRva==0||(functionRva>=(uint)rva&&(ulong)functionRva<(ulong)(uint)rva+(uint)exportSize)))throw new InvalidDataException("Required IL2CPP export is absent or forwarded: "+name);exports[name]=GameBase+functionRva;
   }
  }
  public static void Imm(List<byte>b,params byte[] code){b.AddRange(code);}
