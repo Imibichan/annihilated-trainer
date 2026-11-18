@@ -27,11 +27,11 @@ Windows x64 单机修改器，软件与源码免费分享。v1.4 新增标题菜
 在 Windows PowerShell 5.1 中，从仓库根目录执行以下命令。
 
 ```powershell
-.\Build.ps1 -Target Trainer
-.\Test-Gallery.ps1
+.\trainer\Build.ps1 -Target Trainer
+.\trainer\Test-Gallery.ps1
 ```
 
-画廊索引生成代码在 `catalog/`，游戏内菜单和构图代码在 `title/`，安装、打包和校验脚本在 `setup/`。本版在已验证的 Steam 构建上实机抽查，并对生成资源的 408 个鉴赏入口和 170 次分支跳转做了回读验证。[构建说明](setup/构建说明.txt) · [验证记录](验证记录.txt)
+修改器源码、构建脚本和配套测试在 `trainer/`，画廊索引生成代码在 `catalog/`，游戏内菜单和构图代码在 `title/`，安装、打包和校验脚本在 `setup/`。本版在已验证的 Steam 构建上实机抽查，并对生成资源的 408 个鉴赏入口和 170 次分支跳转做了回读验证。[构建说明](setup/构建说明.txt) · [验证记录](验证记录.txt)
 
 发布包 SHA-256 为 `1b203272bf15c4233bb2f5ae1b76de8d7e7ce32488a86a215e060dce940f49f3`。
 
