@@ -18,9 +18,10 @@ public sealed class TrainerWindow : Form {
  [DllImport("user32",SetLastError=true)] static extern bool RegisterHotKey(IntPtr h,int id,uint modifiers,uint vk);
  [DllImport("user32")] static extern bool UnregisterHotKey(IntPtr h,int id);
  public TrainerWindow():this(false){}
- public TrainerWindow(bool inspectOnly,bool offlinePreview=false){readOnly=inspectOnly;
+ public TrainerWindow(bool inspectOnly,bool offlinePreview=false):this(inspectOnly,offlinePreview,false){}
+ public TrainerWindow(bool inspectOnly,bool offlinePreview,bool openGallery){readOnly=inspectOnly;
   Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-  Text="勇者小队全灭了 · 自用修改器 1.3"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
+  Text="勇者小队全灭了 · 修改器 v1.4 · CG 鉴赏版"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
   var title=new Label{Text="勇者小队全灭了",Font=new Font(Font.FontFamily,17,FontStyle.Bold),Location=new Point(22,17),AutoSize=true};Controls.Add(title);
   var guide=new Label{Text="保持修改器打开，额外加成会随升级保留。重启游戏后重新连接。",Location=new Point(24,54),Size=new Size(668,25),ForeColor=Color.DimGray};Controls.Add(guide);
   connect.Text="连接游戏";connect.SetBounds(24,89,140,36);connect.Click+=async delegate{await Connect();};Controls.Add(connect);
@@ -38,8 +39,11 @@ public sealed class TrainerWindow : Form {
   history.SetBounds(24,527,668,86);history.Multiline=true;history.ReadOnly=true;history.ScrollBars=ScrollBars.Vertical;history.BackColor=Color.White;history.BorderStyle=BorderStyle.FixedSingle;history.Font=new Font(Font.FontFamily,9);Controls.Add(history);
   timer.Interval=1000;timer.Tick+=async delegate{await AutomaticGrowth();};timer.Start();SetEnabled();Log("就绪。四维按人物保存额外加成；修改前请保留正常存档。");
   var mainPage=new TabPage("角色与战斗");var existing=Controls.Cast<Control>().ToArray();foreach(Control c in existing){Controls.Remove(c);mainPage.Controls.Add(c);}var tabs=new TabControl{Dock=DockStyle.Fill};tabs.TabPages.Add(mainPage);var savesPage=new TabPage("存档（含剧透）");savesPage.Controls.Add(new SavePanel(readOnly));tabs.TabPages.Add(savesPage);Controls.Add(tabs);
-  Shown+=async delegate{if(!offlinePreview)await Connect();};
-  FormClosing+=delegate(object sender,FormClosingEventArgs e){if(SavePanel.IsBusy){e.Cancel=true;Log("存档操作进行中，请完成后关闭。");return;}if(busy||automatic){closePending=true;e.Cancel=true;Log("等待当前操作结束后关闭。");}else{timer.Stop();Disconnect();}};
+  var galleryPage=new TabPage("CG 画廊");var gallery=new GalleryPanel(readOnly);galleryPage.Controls.Add(gallery);tabs.TabPages.Add(galleryPage);
+  if(openGallery)tabs.SelectedTab=galleryPage;
+  tabs.Selected+=async delegate{if(tabs.SelectedTab==galleryPage)await gallery.RefreshState();};
+  Shown+=async delegate{if(openGallery)await gallery.RefreshState();else if(!offlinePreview)await Connect();};
+  FormClosing+=delegate(object sender,FormClosingEventArgs e){if(gallery.IsApplying){e.Cancel=true;return;}if(SavePanel.IsBusy){e.Cancel=true;Log("存档操作进行中，请完成后关闭。");return;}if(busy||automatic){closePending=true;e.Cancel=true;Log("等待当前操作结束后关闭。");}else{timer.Stop();Disconnect();}};
  }
  async Task Connect(){
   if(busy)return;busy=true;SetEnabled();Log("正在连接当前游戏……");
@@ -95,6 +99,6 @@ public sealed class TrainerWindow : Form {
 static class Program {
  [STAThread] static void Main(string[] args){bool first;using(var mutex=new Mutex(true,"Local\\Annihilated.PersonalTrainer.v1",out first)){
   if(!first){MessageBox.Show("修改器已经打开，请使用已有窗口。","提示");return;}
-  Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new TrainerWindow(Array.IndexOf(args,"--readonly")>=0||Array.IndexOf(args,"--ui-only")>=0,Array.IndexOf(args,"--ui-only")>=0));
+  Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new TrainerWindow(Array.IndexOf(args,"--readonly")>=0||Array.IndexOf(args,"--ui-only")>=0,Array.IndexOf(args,"--ui-only")>=0,Array.IndexOf(args,"--gallery")>=0));
  }}
 }

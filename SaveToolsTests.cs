@@ -15,7 +15,8 @@ public static class SaveToolsTests {
  static void WriteRaw(string p,string text){using(var f=File.Create(p))using(var z=new DeflateStream(f,CompressionMode.Compress))using(var w=new StreamWriter(z,new UTF8Encoding(true)))w.Write(text);}
  public static int Main(string[] args){try {
  root=Path.Combine(Path.GetTempPath(),"TrainerSaveTests-"+Guid.NewGuid().ToString("N"));live=Path.Combine(root,"fixtures");backups=Path.Combine(root,"snapshots");Directory.CreateDirectory(live);
- string fixture=args.Length>0?args[0]:@"D:\gametools\GPT_Tools\勇者小队全灭了\升级修复前存档备份";
+ string fixture=args.Length>0?args[0]:Environment.GetEnvironmentVariable("ANNIHILATED_SAVE_FIXTURE");
+ if(String.IsNullOrWhiteSpace(fixture))throw new ArgumentException("请通过 ANNIHILATED_SAVE_FIXTURE 指定测试存档副本目录。");
  foreach(var p in Directory.GetFiles(fixture))File.Copy(p,Path.Combine(live,Path.GetFileName(p)));
  string global=Path.Combine(live,"GlobalSave.nson");var old=File.ReadAllBytes(global);var oldText=ReadRaw(global);
  var info=SaveTools.Inspect(live);Check(info.LoopCount==10&&info.HeroClears==0&&info.MageClears==1&&info.WarriorClears==0,"decode real fixture counters");Check(!info.Eligible,"fixture ineligible");

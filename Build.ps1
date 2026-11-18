@@ -5,6 +5,7 @@ $sourceFiles=@((Join-Path $taskRoot 'Remote.cs'),(Join-Path $taskRoot ($Target+'
 if($Target -ne 'Probe'){$sourceFiles+=Join-Path $taskRoot 'Bridge.cs'}
 if($Target -ne 'Probe' -and (Test-Path -LiteralPath (Join-Path $taskRoot 'Growth.cs'))){$sourceFiles+=Join-Path $taskRoot 'Growth.cs'}
 if($Target -eq 'Trainer'){$sourceFiles+=Join-Path $taskRoot 'SaveTools.cs';$sourceFiles+=Join-Path $taskRoot 'SavePanel.cs';$sourceFiles+=Join-Path $taskRoot 'HiddenRouteGuide.cs';$sourceFiles+=Join-Path $taskRoot 'VersionInfo.cs'}
+if($Target -eq 'Trainer'){foreach($extra in @('GalleryLocation.cs','GalleryRunner.cs','GalleryPanel.cs')){$sourceFiles+=Join-Path $taskRoot $extra}}
 foreach($extra in @('Compatibility.cs','RuntimeRules.cs')){$sourceFiles+=Join-Path $taskRoot $extra}
 $taskOutput=Join-Path $taskRoot ($Target+'.exe')
 if(Test-Path -LiteralPath $taskOutput){Remove-Item -LiteralPath $taskOutput}
