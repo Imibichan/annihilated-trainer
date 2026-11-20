@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Reflection;
 using System.Windows.Forms;
 using Trainer;
 
@@ -28,6 +29,13 @@ public static class GalleryTests
 
     static void Touch(string path) { File.WriteAllText(path, "", Encoding.UTF8); }
 
+    static void ClickWithoutShowingWindow(Button action)
+    {
+        if (!action.Enabled) throw new Exception("Attempt to click disabled test control");
+        typeof(Button).GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)
+            .Invoke(action, new object[] { EventArgs.Empty });
+    }
+
     static void WaitFor(Func<bool> complete)
     {
         var until = DateTime.UtcNow.AddSeconds(15);
@@ -41,66 +49,51 @@ public static class GalleryTests
 
     static void TestPanel(string game, GalleryRunner runner)
     {
-        using (var form = new Form { ShowInTaskbar = false, Opacity = 0 })
         using (var panel = new GalleryPanel(false, runner))
         {
-            form.Controls.Add(panel);
-            form.Show();
             var field = (TextBox)panel.Controls.Find("galleryDirectory", true)[0];
             var state = (Label)panel.Controls.Find("galleryState", true)[0];
-            var toggle = (Button)panel.Controls.Find("galleryToggle", true)[0];
+            var close = (Button)panel.Controls.Find("closeLegacyGallery", true)[0];
+            var replay = (Button)panel.Controls.Find("storyReplay", true)[0];
+            var choose = (Button)panel.Controls.Find("galleryChoose", true)[0];
             field.Text = game;
             var refresh = panel.RefreshState();
             WaitFor(() => refresh.IsCompleted);
             refresh.GetAwaiter().GetResult();
-            Check(toggle.Enabled && state.Text.Contains("已关闭"), "offline UI can enable a verified installation");
-            toggle.PerformClick();
-            WaitFor(() => !panel.IsApplying);
-            bool stored = runner.IsEnabled(game);
-            Check(toggle.Enabled && state.Text.Contains("已启用") && stored,
-                "actual enable button updates disk and label: state=" + state.Text + ", stored=" + stored +
-                ", can select=" + toggle.CanSelect + ", visible=" + toggle.Visible);
-            Touch(Path.Combine(game, "older.test"));
+            Check(!close.Enabled && state.Text.Contains("已关闭") && replay.Enabled, "clean install has replay and grey migration action");
+            Touch(Path.Combine(game, "installed.test"));
             refresh = panel.RefreshState();
             WaitFor(() => refresh.IsCompleted);
-            var updates = panel.Controls.Find("galleryUpdate", true);
-            Check(updates.Length == 1, "existing gallery offers a distinct update action");
-            var update = (Button)updates[0];
-            Check(update.Visible && update.Enabled && toggle.Enabled && toggle.Text.Contains("关闭"), "old gallery can be updated or disabled");
-            update.PerformClick();
+            Check(close.Enabled && close.Text == "关闭旧画廊" && state.Text.Contains("已启用"), "installed gallery has only close action");
+            ClickWithoutShowingWindow(close);
+            Check(panel.IsApplying && !close.Enabled && !replay.Enabled && !choose.Enabled, "close serializes mutations and locks directory");
+            var duplicate = panel.RefreshState();
+            Check(duplicate.IsCompleted && panel.IsApplying, "parallel refresh cannot reopen controls during close");
             WaitFor(() => !panel.IsApplying);
-            Check(!File.Exists(Path.Combine(game, "older.test")) && runner.IsEnabled(game) && !update.Visible,
-                "update action installs new version and removes the stale update action");
-            toggle.PerformClick();
-            WaitFor(() => !panel.IsApplying);
-            stored = runner.IsEnabled(game);
-            Check(toggle.Enabled && state.Text.Contains("已关闭") && !stored,
-                "actual disable button updates disk and label: state=" + state.Text + ", stored=" + stored +
-                ", can select=" + toggle.CanSelect + ", visible=" + toggle.Visible);
+            Check(!close.Enabled && replay.Enabled && state.Text.Contains("已关闭") && !File.Exists(Path.Combine(game, "installed.test")),
+                "successful close reads back original state and leaves migration disabled");
             Touch(Path.Combine(game, "recovery.test"));
             refresh = panel.RefreshState();
             WaitFor(() => refresh.IsCompleted);
-            Check(toggle.Enabled && toggle.Text.Contains("恢复"), "verified interruption offers an explicit recovery action");
+            Check(close.Enabled && close.Text == "关闭旧画廊" && state.Text.Contains("需要恢复"), "same close action can finish an interrupted restore");
             Check(File.Exists(Path.Combine(game, "recovery.test")), "inspecting an interrupted transaction is read-only");
-            toggle.PerformClick();
+            ClickWithoutShowingWindow(close);
             WaitFor(() => !panel.IsApplying);
             Check(state.Text.Contains("已关闭") && !File.Exists(Path.Combine(game, "recovery.test")),
                 "recovery button finishes restoration and reads back actual status");
             File.Delete(Path.Combine(game, "known.test"));
             refresh = panel.RefreshState();
             WaitFor(() => refresh.IsCompleted);
-            Check(!toggle.Enabled && state.Text.Contains("待确认"), "unsupported version clears an earlier verified state");
+            Check(!close.Enabled && replay.Enabled && state.Text.Contains("待确认"), "unknown legacy state leaves replay independent");
         }
         Touch(Path.Combine(game, "known.test"));
-        using (var form = new Form { ShowInTaskbar = false, Opacity = 0 })
+        Touch(Path.Combine(game, "installed.test"));
         using (var panel = new GalleryPanel(true, runner))
         {
-            form.Controls.Add(panel);
-            form.Show();
             ((TextBox)panel.Controls.Find("galleryDirectory", true)[0]).Text = game;
             var refresh = panel.RefreshState();
             WaitFor(() => refresh.IsCompleted);
-            Check(!panel.Controls.Find("galleryToggle", true)[0].Enabled, "read-only mode keeps gallery operations disabled");
+            Check(!panel.Controls.Find("closeLegacyGallery", true)[0].Enabled, "read-only mode keeps migration disabled even if installed");
         }
     }
 
@@ -128,23 +121,23 @@ public static class GalleryTests
         GalleryLocation.SaveChoice(settings, game);
         Check(GalleryLocation.ReadChoice(settings) == game, "choice can be saved again");
         Check(GalleryLocation.Find(null, new string[0]) == null, "missing game is not a selection");
-        Fails(() => helper.IsEnabled(steam), "Annihilated.exe");
-        Fails(() => helper.IsEnabled(game), "测试游戏版本未知");
+        Fails(() => helper.ReadStatus(steam), "Annihilated.exe");
+        Fails(() => helper.ReadStatus(game), "测试游戏版本未知");
 
         Touch(Path.Combine(game, "known.test"));
-        Check(!helper.IsEnabled(game), "default state is disabled");
-        helper.SetEnabled(game, true);
-        helper.SetEnabled(game, true);
-        Check(File.Exists(Path.Combine(game, "installed.test")), "enable survives a repeat call");
-        Check(new GalleryRunner(temp).IsEnabled(game), "a fresh client observes installed state");
-        helper.SetEnabled(game + Path.DirectorySeparatorChar, false);
-        helper.SetEnabled(game, false);
+        Check(helper.ReadStatus(game) == GalleryStatus.Disabled, "default state is disabled");
+        Touch(Path.Combine(game, "installed.test"));
+        Check(new GalleryRunner(temp).ReadStatus(game) == GalleryStatus.Enabled, "a fresh client observes existing old gallery");
+        helper.CloseLegacyGallery(game + Path.DirectorySeparatorChar);
+        helper.CloseLegacyGallery(game);
         Check(!File.Exists(Path.Combine(game, "installed.test")), "repeat disable leaves no installation");
-        Touch(Path.Combine(game, "skip-install.test"));
-        Fails(() => helper.SetEnabled(game, true), "核验");
-        Check(!helper.IsEnabled(game), "a lying write result does not enable the gallery");
-        Fails(() => new GalleryRunner(game).IsEnabled(game), "GallerySetup.exe");
-        File.Delete(Path.Combine(game, "skip-install.test"));
+        Touch(Path.Combine(game, "installed.test"));
+        Touch(Path.Combine(game, "skip-close.test"));
+        Fails(() => helper.CloseLegacyGallery(game), "核验");
+        Check(helper.ReadStatus(game) == GalleryStatus.Enabled, "a lying close result cannot mark the old gallery disabled");
+        Fails(() => new GalleryRunner(game).ReadStatus(game), "缺少旧画廊迁移组件");
+        File.Delete(Path.Combine(game, "skip-close.test"));
+        helper.CloseLegacyGallery(game);
         var previous = SynchronizationContext.Current;
         using (var context = new WindowsFormsSynchronizationContext())
         {
@@ -152,6 +145,6 @@ public static class GalleryTests
             try { TestPanel(game, helper); }
             finally { SynchronizationContext.SetSynchronizationContext(previous); }
         }
-        Console.WriteLine("PASS " + passed + " gallery location and setup protocol assertions");
+        Console.WriteLine("PASS " + passed + " replay location and close-only migration assertions");
     }
 }

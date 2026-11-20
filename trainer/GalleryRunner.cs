@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Trainer
 {
-    public enum GalleryStatus { Enabled = 0, Disabled = 10, UpdateAvailable = 11 }
+    public enum GalleryStatus { Enabled = 0, Disabled = 10 }
 
     public sealed class GalleryRecoveryRequired : IOException
     {
@@ -15,28 +15,61 @@ namespace Trainer
 
     public sealed class GalleryRunner
     {
-        readonly string helper;
+        readonly string root;
 
         public GalleryRunner(string applicationFolder)
         {
-            helper = Path.Combine(Path.GetFullPath(applicationFolder), "GallerySetup.exe");
+            root = Path.GetFullPath(applicationFolder);
         }
 
-        int Run(string verb, string directory, bool checkingStatus)
+        static string QuotePath(string directory)
+        {
+            string full = Path.GetFullPath(directory);
+            return "\"" + full + full.Substring(full.TrimEnd('\\').Length) + "\"";
+        }
+
+        internal ProcessStartInfo ReplayStartInfo(string directory)
+        {
+            if (!GalleryLocation.IsGameDirectory(directory))
+                throw new DirectoryNotFoundException("请选择包含 Annihilated.exe 的游戏安装目录。");
+            var python = Path.Combine(root, "gallery", "runtime", "pythonw.exe");
+            var script = Path.Combine(root, "gallery", "code", "replay", "launch.py");
+            if (!File.Exists(python) || !File.Exists(script))
+                throw new FileNotFoundException("未找到回放程序。请将整个 V1.5 压缩包解压到同一文件夹。");
+            return new ProcessStartInfo(python, "-X utf8 -B " + QuotePath(script) + " --game " + QuotePath(directory))
+            {
+                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root,
+                RedirectStandardError = true, StandardErrorEncoding = Encoding.UTF8
+            };
+        }
+
+        public void RunReplay(string directory)
+        {
+            using (var process = Process.Start(ReplayStartInfo(directory)))
+            {
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                    throw new IOException(String.IsNullOrWhiteSpace(error) ? "回放启动器返回错误码 " + process.ExitCode + "。" : error.Trim());
+            }
+        }
+
+        int RunMigration(string directory, bool close)
         {
             if (!GalleryLocation.IsGameDirectory(directory))
                 throw new DirectoryNotFoundException("请选择包含 Annihilated.exe 和 Annihilated_Data 的游戏目录。");
-            if (!File.Exists(helper))
-                throw new FileNotFoundException("缺少 GallerySetup.exe，请将其与修改器放在同一文件夹。");
+            var python = Path.Combine(root, "gallery", "runtime", "python.exe");
+            var script = Path.Combine(root, "gallery", "code", "legacy_gallery.py");
+            if (!File.Exists(python) || !File.Exists(script))
+                throw new FileNotFoundException("缺少旧画廊迁移组件。请完整解压 V1.5 发布包。");
 
             // Windows doubles the trailing backslashes of a quoted argument before its closing quote.
-            string full = Path.GetFullPath(directory);
-            string end = full.Substring(full.TrimEnd('\\').Length);
-            var start = new ProcessStartInfo(helper, verb + " \"" + full + end + "\"")
+            var start = new ProcessStartInfo(python, "-X utf8 -B " + QuotePath(script) +
+                (close ? " disable " : " status ") + QuotePath(directory))
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(helper),
+                WorkingDirectory = root,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardErrorEncoding = Encoding.UTF8,
@@ -49,31 +82,23 @@ namespace Trainer
                 process.WaitForExit();
                 Task.WaitAll(output, error);
                 int code = process.ExitCode;
-                if (code == 0 || (checkingStatus && (code == 10 || code == 11))) return code;
+                if (code == 0 || (!close && code == 10)) return code;
                 var explanation = error.Result.Trim();
                 const string recovery = "RECOVERY_REQUIRED ";
                 if (code == 1 && explanation.StartsWith(recovery, StringComparison.Ordinal))
                     throw new GalleryRecoveryRequired(explanation.Substring(recovery.Length));
-                if (explanation.Length == 0) explanation = "GallerySetup.exe 返回错误码 " + code + "。";
+                if (explanation.Length == 0) explanation = "旧画廊迁移组件返回错误码 " + code + "。";
                 throw new IOException(explanation);
             }
         }
 
-        public GalleryStatus ReadStatus(string directory) { return (GalleryStatus)Run("status", directory, true); }
-        public bool IsEnabled(string directory) { return ReadStatus(directory) != GalleryStatus.Disabled; }
+        public GalleryStatus ReadStatus(string directory) { return (GalleryStatus)RunMigration(directory, false); }
 
-        public void SetEnabled(string directory, bool enabled)
+        public void CloseLegacyGallery(string directory)
         {
-            var desired = enabled ? GalleryStatus.Enabled : GalleryStatus.Disabled;
-            if (ReadStatus(directory) == desired) return;
-            Run(enabled ? "enable" : "disable", directory, false);
-            if (ReadStatus(directory) != desired) throw new IOException("操作后的安装状态核验失败，请重新读取。");
-        }
-
-        public void Recover(string directory)
-        {
-            Run("disable", directory, false);
-            if (IsEnabled(directory)) throw new IOException("恢复后的安装状态核验失败，请重新读取。");
+            RunMigration(directory, true);
+            if (ReadStatus(directory) != GalleryStatus.Disabled)
+                throw new IOException("旧画廊仍处于启用状态，恢复结果未通过核验。");
         }
     }
 }

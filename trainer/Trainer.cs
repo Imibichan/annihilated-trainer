@@ -21,7 +21,7 @@ public sealed class TrainerWindow : Form {
  public TrainerWindow(bool inspectOnly,bool offlinePreview=false):this(inspectOnly,offlinePreview,false){}
  public TrainerWindow(bool inspectOnly,bool offlinePreview,bool openGallery){readOnly=inspectOnly;
   Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-  Text="勇者小队全灭了 · 修改器 v1.4 · CG 鉴赏版"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
+  Text="勇者小队全灭了 · 修改器 v1.5 · 原作剧情回放"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
   var title=new Label{Text="勇者小队全灭了",Font=new Font(Font.FontFamily,17,FontStyle.Bold),Location=new Point(22,17),AutoSize=true};Controls.Add(title);
   var guide=new Label{Text="保持修改器打开，额外加成会随升级保留。重启游戏后重新连接。",Location=new Point(24,54),Size=new Size(668,25),ForeColor=Color.DimGray};Controls.Add(guide);
   connect.Text="连接游戏";connect.SetBounds(24,89,140,36);connect.Click+=async delegate{await Connect();};Controls.Add(connect);
@@ -39,7 +39,7 @@ public sealed class TrainerWindow : Form {
   history.SetBounds(24,527,668,86);history.Multiline=true;history.ReadOnly=true;history.ScrollBars=ScrollBars.Vertical;history.BackColor=Color.White;history.BorderStyle=BorderStyle.FixedSingle;history.Font=new Font(Font.FontFamily,9);Controls.Add(history);
   timer.Interval=1000;timer.Tick+=async delegate{await AutomaticGrowth();};timer.Start();SetEnabled();Log("就绪。四维按人物保存额外加成；修改前请保留正常存档。");
   var mainPage=new TabPage("角色与战斗");var existing=Controls.Cast<Control>().ToArray();foreach(Control c in existing){Controls.Remove(c);mainPage.Controls.Add(c);}var tabs=new TabControl{Dock=DockStyle.Fill};tabs.TabPages.Add(mainPage);var savesPage=new TabPage("存档（含剧透）");savesPage.Controls.Add(new SavePanel(readOnly));tabs.TabPages.Add(savesPage);Controls.Add(tabs);
-  var galleryPage=new TabPage("CG 画廊");var gallery=new GalleryPanel(readOnly);galleryPage.Controls.Add(gallery);tabs.TabPages.Add(galleryPage);
+  var galleryPage=new TabPage("剧情回放");var gallery=new GalleryPanel(readOnly);galleryPage.Controls.Add(gallery);tabs.TabPages.Add(galleryPage);
   if(openGallery)tabs.SelectedTab=galleryPage;
   tabs.Selected+=async delegate{if(tabs.SelectedTab==galleryPage)await gallery.RefreshState();};
   Shown+=async delegate{if(openGallery)await gallery.RefreshState();else if(!offlinePreview)await Connect();};
