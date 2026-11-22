@@ -85,6 +85,35 @@ class ReplayMigrationTests(unittest.TestCase):
         folders = migration.legacy_folders(self.source, self.cache)
         return migration.retire_old_games(self.source, self.cache, game, folders)
 
+    def test_font_receipt_must_match_before_retiring_the_previous_game(self):
+        _, old, _ = self.legacy()
+        font = iso.AA + "StandaloneWindows64/startupuiinitialdependencies_assets_all_" + "3" * 32 + ".bundle"
+        source_font = self.write(self.source / font, b"installed font")
+        current = self.fresh()
+        marker = json.loads((current.root / iso.MARKER).read_bytes())
+        marker["fontFile"] = font
+        iso.atomic_json(current.root / iso.MARKER, marker)
+        (current.root / font).write_bytes(b"menu with additional glyphs")
+        receipt_path = current.root / ".v16-program.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["fontSha"] = iso._file_hash(source_font)
+        iso.atomic_json(receipt_path, receipt)
+        with self.assertRaisesRegex(ValueError, "资源回读"):
+            self.run_upgrade(current)
+        self.assertTrue(old.is_dir())
+        receipt["fontSha"] = iso._file_hash(current.root / font)
+        iso.atomic_json(receipt_path, receipt)
+        self.assertTrue(self.run_upgrade(current)["removed"])
+        self.assertFalse(old.exists())
+
+    def test_marker_cannot_disguise_an_unrelated_file_as_the_menu_font(self):
+        current = self.fresh()
+        marker = json.loads((current.root / iso.MARKER).read_bytes())
+        marker["fontFile"] = "UnityPlayer.dll"
+        iso.atomic_json(current.root / iso.MARKER, marker)
+        with self.assertRaises(ValueError):
+            iso.verify_copy(current.root)
+
     def test_completed_old_build_and_current_marker_only_copy_both_retired(self):
         _, first, profile = self.legacy(receipt=True)
         original = self.global_save(profile)
@@ -343,6 +372,8 @@ class ReplayMigrationTests(unittest.TestCase):
         import unittest.mock as mock
         aa = Path(iso.AA)
         title = next(n for n in iso.STOCK_HASHES if n.endswith(".bundle"))
+        font = iso.AA + "StandaloneWindows64/startupuiinitialdependencies_assets_all_abc.bundle"
+        self.write(self.source / font, b"original font")
         ordinary = [iso.DATA + "/Plugins/x86_64/lib_burst_generated.dll",
                     iso.DATA + "/il2cpp_data/Metadata/global-metadata.dat", iso.AA + "StandaloneWindows64/scene.bundle"]
         for n in ordinary:
@@ -356,16 +387,24 @@ class ReplayMigrationTests(unittest.TestCase):
             (game / self.script_rel).write_bytes(b"patched script")
             (game / self.catalog).write_bytes(b"patched catalog")
             return {"bundle":self.script}
+        def patch_font(source, game, edits):
+            self.assertEqual((game / font).read_bytes(), b"original font")
+            (game / font).write_bytes(b"patched font")
+            (game / self.catalog).write_bytes(b"catalog with script and font")
+            return {"added": 1}
         compile_mock = mock.Mock(return_value=({},{"artworks":15,"scenes":204}))
         support = {"program":SimpleNamespace(compile_replays=compile_mock),
                    "addressables":SimpleNamespace(address_paths=lambda blob:{}),
+                   "replay.menu_font":SimpleNamespace(font_bundle=lambda root:root/font,
+                         patch_menu_font=patch_font, MenuFontUnavailable=LookupError),
                    "replay.private_title":SimpleNamespace(ensure_replay_title=patch_title,title_path=lambda g,m:g/title),
                    "script_assets":SimpleNamespace(AA=aa,PLATFORM="StandaloneWindows64",_bundle=lambda p:p/self.script_rel,
                                       patch_scripts=patch_scripts,read_script_rows=lambda source:{})}
         self.index.write_bytes(b"{}")
         destination = generation(self.cache, self.source, self.index) / "game"
         with patch.dict(sys.modules, support):
-            game, _ = launch.prepare(self.source,destination,self.index)
+            game, receipt = launch.prepare(self.source,destination,self.index)
+            self.assertEqual(receipt.get("fontSha"), iso._file_hash(game.root / font))
             self.global_save(game.profile)
             original_save = (game.profile / migration.SAVE).read_bytes()
             (game.root / ordinary[0]).unlink()
@@ -378,7 +417,7 @@ class ReplayMigrationTests(unittest.TestCase):
             game, _ = launch.prepare(self.source,destination,self.index)
             self.assertEqual(compile_mock.call_count, 1)
             self.assertTrue(all((game.root / p).read_bytes() == b"official bytes" for p in ordinary))
-            for count, name in enumerate([self.script_rel,self.catalog,title,".v16-program.json"], 2):
+            for count, name in enumerate([self.script_rel,self.catalog,title,font,".v16-program.json"], 2):
                 path = game.root / name
                 if count % 2:
                     path.unlink()
@@ -405,6 +444,19 @@ class ReplayMigrationTests(unittest.TestCase):
             launch.compatibility_report(self.cache, "first", report, show=True)
             message.assert_called_once()
             self.assertIn(out, message.call_args.args[1])
+
+    def test_missing_foreign_language_font_leaves_playable_entries_available(self):
+        report = {"gameRoot":"scratch", "scenes":204, "artworks":15, "migration":{"preserved":[], "removed":[]},
+                  "fontWarning":"部分菜单字形缺失", "replayLocale":"zh-CN"}
+        self.cache.mkdir(exist_ok=True)
+        with patch.object(launch.ctypes.windll.user32, "MessageBoxW") as message:
+            name = launch.compatibility_report(self.cache, "current", report, show=True)
+            self.assertIn("部分菜单字形缺失", Path(name).read_text(encoding="utf-8-sig"))
+            message.assert_not_called()
+            report["replayLocale"] = "ja"
+            launch.compatibility_report(self.cache, "current", report, show=True)
+            launch.compatibility_report(self.cache, "current", report, show=True)
+            message.assert_called_once()
 
     @unittest.skipUnless(os.name == "nt", "Windows byte range lock")
     def test_active_v15_lock_rejects_parallel_launch(self):

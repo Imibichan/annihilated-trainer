@@ -242,6 +242,8 @@ def _file_id(path):
 def _workfiles(game, bundle_names):
     aa = game / iso.AA
     locations = [(aa, ".replay-title-record-", {"catalog.bin"}),
+                 (aa / "StandaloneWindows64", ".replay-font-", {"previous.bundle", "catalog.bin",
+                    *(name for name in bundle_names if iso.MENU_FONT_BUNDLE.fullmatch(name))}),
                  (aa / "StandaloneWindows64", ".replay-title-", {"previous.bundle", "catalog.bin",
                     *(name for name in bundle_names if iso.TITLE_BUNDLE.fullmatch(name))}),
                  (aa / "StandaloneWindows64", ".replay-build-", {"previous.bundle", "catalog.bin",
@@ -472,6 +474,8 @@ def retire_old_games(source, cache, game, legacy):
         raise ValueError("新回放的剧本资源记录无效。")
     checks = {"bundleSha": iso.AA + "StandaloneWindows64/" + script, "titleSha": marker["titleFile"],
               "catalogSha": iso.AA + "catalog.bin"}
+    if marker.get("fontFile"):
+        checks["fontSha"] = marker["fontFile"]
     if (not iso._same_directory(marker["source"], source) or
             any(receipt.get(k) != iso._file_hash(iso._check_path(game.root / p)) for k,p in checks.items())):
         raise ValueError("新回放尚未完成资源回读。")

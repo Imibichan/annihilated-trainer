@@ -18,6 +18,7 @@ APP_INFO = DATA + "/app.info"
 MANAGERS = DATA + "/globalgamemanagers"
 AA = DATA + "/StreamingAssets/aa/"
 TITLE_BUNDLE = re.compile(r"naninovelstartupui_assets_all(?:_[A-Za-z0-9-]+)?\.bundle", re.I)
+MENU_FONT_BUNDLE = re.compile(r"startupuiinitialdependencies_assets_all(?:_[A-Za-z0-9-]+)?\.bundle", re.I)
 STOCK_HASHES = {
     AA + "StandaloneWindows64/naninovelstartupui_assets_all_3b70a54d9568632d966864a781231a5e.bundle":
         "954fd3c769c749584942e681398df9c203ec44b948f0f93efde90fc8af85517e",
@@ -380,6 +381,13 @@ def _mutable(info):
     names = {info["titleFile"], AA + "catalog.bin"}
     if info.get("scriptFile"):
         names.add(info["scriptFile"])
+    font = info.get("fontFile")
+    if font is not None:
+        if (not isinstance(font, str) or not MENU_FONT_BUNDLE.fullmatch(Path(font).name)
+                or font != AA + "StandaloneWindows64/" + Path(font).name
+                or font not in info.get("copiedFiles", [])):
+            raise ValueError("回放字体资源记录无效。")
+        names.add(font)
     return names
 
 
@@ -433,7 +441,7 @@ def _verify_profile_settings(game):
         raise ValueError("隔离版存档配置已改变，已取消启动。")
 
 
-def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=None, script_file=None):
+def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=None, script_file=None, font_file=None):
     """Prepare once, then verify and reuse. Never overwrite or adopt an existing unmarked directory."""
     source = _check_path(source)
     destination = _check_path(destination, allow_missing=True)
@@ -448,7 +456,8 @@ def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=Non
     if os.path.lexists(destination):
         game, marker = _owned(destination)
         if (not _same_directory(marker.get("source"), source)
-                or marker.get("sourceBuild") != source_stamp(source) or marker.get("scriptFile") != script_file):
+                or marker.get("sourceBuild") != source_stamp(source) or marker.get("scriptFile") != script_file
+                or marker.get("fontFile") != font_file):
             raise ValueError("该回放目录对应另一套游戏安装或版本，请选择新的回放目录。")
         damaged = list(_mismatches(game, marker))
         if damaged:
@@ -478,7 +487,7 @@ def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=Non
     configs = _private_configs(source, company)
     marker = {"schema": 2, "root": str(destination), "source": str(source), "sourceBuild": stamp,
               "company": company, "galleryBaseline": gallery_baseline, "copiedFiles": sorted(paths),
-              "programInputs": program_inputs, "scriptFile": script_file,
+              "programInputs": program_inputs, "scriptFile": script_file, "fontFile": font_file,
               "managerSha256": hashlib.sha256(configs[MANAGERS]).hexdigest(),
               "runtimeHashes": {name: _file_hash(source / name) for name in sorted(ROOT_REQUIRED)},
               "vendorSha256": sdk_hash, "titleFile": title_file, "sourceTitleSha256": expected_hashes[title_file]}

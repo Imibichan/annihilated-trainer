@@ -26,7 +26,7 @@ public sealed class TrainerWindow : Form {
  public TrainerWindow(bool inspectOnly,bool offlinePreview=false):this(inspectOnly,offlinePreview,false){}
  public TrainerWindow(bool inspectOnly,bool offlinePreview,bool openGallery){readOnly=inspectOnly;
   Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-  Text="勇者小队全灭了 · 修改器 v1.6 · 原作剧情回放"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
+  Text="勇者小队全灭了 · 修改器 v1.6.1 · 原作剧情回放"+(readOnly?"（只读检查）":"");Font=new Font("Microsoft YaHei UI",10);ClientSize=new Size(740,675);MinimumSize=new Size(756,714);MaximumSize=MinimumSize;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedSingle;MaximizeBox=false;AutoScaleMode=AutoScaleMode.Font;BackColor=Color.FromArgb(246,247,250);
   var title=new Label{Text="勇者小队全灭了",Font=new Font(Font.FontFamily,17,FontStyle.Bold),Location=new Point(22,17),AutoSize=true};Controls.Add(title);
   var guide=new Label{Text="保持修改器打开，额外加成会随升级保留。重启游戏后重新连接。",Location=new Point(24,54),Size=new Size(668,25),ForeColor=Color.DimGray};Controls.Add(guide);
   connect.Text="连接游戏";connect.SetBounds(24,89,140,36);connect.Click+=async delegate{await Connect();};Controls.Add(connect);
