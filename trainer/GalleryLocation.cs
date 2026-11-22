@@ -14,7 +14,8 @@ namespace Trainer
         {
             return !String.IsNullOrWhiteSpace(directory) && Path.IsPathRooted(directory)
                 && File.Exists(Path.Combine(directory, "Annihilated.exe"))
-                && Directory.Exists(Path.Combine(directory, "Annihilated_Data"));
+                && Directory.Exists(Path.Combine(directory, "Annihilated_Data"))
+                && !File.Exists(Path.Combine(directory, ".orien-replay-copy.json"));
         }
 
         public static string ChoicePath

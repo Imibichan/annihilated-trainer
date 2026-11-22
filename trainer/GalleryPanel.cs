@@ -46,7 +46,7 @@ public sealed class GalleryPanel : UserControl
         replay.FlatStyle = FlatStyle.Flat;
         replay.Enabled = false;
         Controls.Add(replay);
-        replayStatus.Text = readOnly ? "当前为只读检查模式。" : "首次打开会建立独立游戏副本。";
+        replayStatus.Text = readOnly ? "当前为只读检查模式。" : "首次打开会从当前游戏建立副本，再清理本安装的 V1.5 旧副本。";
         replayStatus.SetBounds(222, 180, 470, 64);
         Controls.Add(replayStatus);
         Controls.Add(new Label { Name = "legacyGalleryHeading", Text = "V1.4 旧画廊",

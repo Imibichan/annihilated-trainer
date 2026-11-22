@@ -39,11 +39,13 @@ def _slime_post_slot(lines, kinds, section):
     return i + 2
 
 
-def patch_program(edits, scripts):
+def patch_program(edits, scripts, active_ids=None):
     """Expose the original fallthrough after the servants' fight without moving story rows."""
-    rows = scripts[S4]
-    patch = edits.setdefault(S4, {})
     for section, name in [(2, AFTER_SERVANTS), (1, 'V15FallenRescuersAfter')]:
+        if active_ids is not None and S4 + '.' + name not in active_ids:
+            continue
+        rows = scripts[S4]
+        patch = edits.setdefault(S4, {})
         i = _slime_post_slot([r[3].strip() for r in rows], [r[1] for r in rows], section)
         label = '# ' + name
         if i in patch and patch[i] != label:
@@ -205,20 +207,21 @@ def _other_battles(flow, gallery):
         return _setup('Warrior', floor, section, {}, '') + ['@gosub Func.ShowSettings',
                 f'@set battleTarget="{target}"', f'@set addEnemyResourceNames="{enemies}"', '@set showEnemyUI=false']
     hydra_setup = prep(6, 3, 'warriorIllusionB', 'warriorIllusionB') + _companion('hero', 16)
-    hydra = _battle_action(flow, gallery, 'Battle.Action.WarriorHydraAfter', 'Warrior', 5, '九头蛇倒下之后',
-        hydra_setup, ['@set v15WarriorHydra=1', '@set turnCount=4', '@set tempWarriorIllusionEventTiming="turnStart"',
-        '@gosub Battle.WarriorIllusionBattleEventCheck', '@set enemy{yValWarriorHydraEnemyId}StateImmortal=0',
-        '@set enemy{yValWarriorHydraEnemyId}StateImmuneDeath=0', '@set enemy{yValWarriorHydraEnemyId}StateBlock=0',
-        '@set enemy{yValWarriorHydraEnemyId}StateEvading=0', '@set enemy{yValWarriorHydraEnemyId}Health=1',
-        '@set selectionEnemyTargetId=GetEnemyStr(yValWarriorHydraEnemyId)', '@set selectCommand=-1'],
-        ('WarriorIllusionHydraDefeatedText','WarriorIllusionBAfterHydraText','WarriorIllusionBAfterHydraText4'),
-        [('Battle','@gosub .WarriorIllusionBStartText3'), ('Battle','# WarriorIllusionHydraAppear'),
-         ('Battle','@set yValWarriorHydraEnemyId=enemyMaxCount'),
-         ('Battle','@if battleTarget=="warriorIllusionB"&&tempEnemyResourceName=="warriorHydraIllusion"'),
-         ('Battle','@gosub .WarriorIllusionHydraDefeatedText'), ('Battle','@gosub .WarriorIllusionBReturnAfterHydra'),
-         ('Battle','@set yValWarriorIllusionBAfterHydraReturnTurn=turnCount'),
-         ('Battle','@gosub .WarriorIllusionBAfterHydraText4')], '真实九头蛇对象被击倒，再续原作幻影回合对白。')
-    yield hydra
+    with flow.review('Battle.Action.WarriorHydraAfter'):
+        hydra = _battle_action(flow, gallery, 'Battle.Action.WarriorHydraAfter', 'Warrior', 5, '九头蛇倒下之后',
+            hydra_setup, ['@set v15WarriorHydra=1', '@set turnCount=4', '@set tempWarriorIllusionEventTiming="turnStart"',
+            '@gosub Battle.WarriorIllusionBattleEventCheck', '@set enemy{yValWarriorHydraEnemyId}StateImmortal=0',
+            '@set enemy{yValWarriorHydraEnemyId}StateImmuneDeath=0', '@set enemy{yValWarriorHydraEnemyId}StateBlock=0',
+            '@set enemy{yValWarriorHydraEnemyId}StateEvading=0', '@set enemy{yValWarriorHydraEnemyId}Health=1',
+            '@set selectionEnemyTargetId=GetEnemyStr(yValWarriorHydraEnemyId)', '@set selectCommand=-1'],
+            ('WarriorIllusionHydraDefeatedText','WarriorIllusionBAfterHydraText','WarriorIllusionBAfterHydraText4'),
+            [('Battle','@gosub .WarriorIllusionBStartText3'), ('Battle','# WarriorIllusionHydraAppear'),
+             ('Battle','@set yValWarriorHydraEnemyId=enemyMaxCount'),
+             ('Battle','@if battleTarget=="warriorIllusionB"&&tempEnemyResourceName=="warriorHydraIllusion"'),
+             ('Battle','@gosub .WarriorIllusionHydraDefeatedText'), ('Battle','@gosub .WarriorIllusionBReturnAfterHydra'),
+             ('Battle','@set yValWarriorIllusionBAfterHydraReturnTurn=turnCount'),
+             ('Battle','@gosub .WarriorIllusionBAfterHydraText4')], '真实九头蛇对象被击倒，再续原作幻影回合对白。')
+        yield hydra
 
     head_setup = prep(2, 4, 'villainess', 'villainess') + ['@set xSwitchVillainessBattleRe=1',
                     '@set xSwitchVillainessWithDollDamageFirstEvent=1', '@set xSwitchSkipEnemyAppearMessage=1']
@@ -228,35 +231,37 @@ def _other_battles(flow, gallery):
             '@set turnCharacter="partner"', '@set turnCharacterId="partner"', '@set notTurnCharacter="player"',
             '@set turnCharacterPosition=GetTargetCharacterPosition(turnCharacter)', '@set notTurnCharacterPosition="front"',
             '@set notTurnCharacterPosition="back" if:turnCharacterPosition=="front"', '@set selectionEnemyTargetId="enemy1"']
-    head = _battle_action(flow, gallery, 'Battle.Action.WarriorHead', 'Warrior', 2, '战士投出的头颅', head_setup, cmds,
-        ('WarriorHeadThrowPresentation', 'WarriorHeadVillainessHitPresentation'),
-        [('Func','@addItem "{addItem}" AddedIndexSaveValue:"itemAddedIndex"'),
-         ('Battle','@if nowBattleActionSetName=="warriorHead"&&battleTarget=="villainess"'),
-         ('Battle','@set xSwitchWarriorAtamaBreak=1'), ('Battle','@gosub .WarriorHeadThrowPresentation'),
-         ('Battle','@return if:turnCharacter!="partner"||partnerCharacter!="warrior"'),
-         ('Battle','@gosub .WarriorHeadVillainessHitPresentation'), ('Battle','@gosub BreakItem'),
-         ('Battle','@set xSwitchBattleEndRequested=1')], '战士使用原作物品槽的最后一次耐久，触发投掷与命中两段演出。')
-    yield head
+    with flow.review('Battle.Action.WarriorHead'):
+        head = _battle_action(flow, gallery, 'Battle.Action.WarriorHead', 'Warrior', 2, '战士投出的头颅', head_setup, cmds,
+            ('WarriorHeadThrowPresentation', 'WarriorHeadVillainessHitPresentation'),
+            [('Func','@addItem "{addItem}" AddedIndexSaveValue:"itemAddedIndex"'),
+             ('Battle','@if nowBattleActionSetName=="warriorHead"&&battleTarget=="villainess"'),
+             ('Battle','@set xSwitchWarriorAtamaBreak=1'), ('Battle','@gosub .WarriorHeadThrowPresentation'),
+             ('Battle','@return if:turnCharacter!="partner"||partnerCharacter!="warrior"'),
+             ('Battle','@gosub .WarriorHeadVillainessHitPresentation'), ('Battle','@gosub BreakItem'),
+             ('Battle','@set xSwitchBattleEndRequested=1')], '战士使用原作物品槽的最后一次耐久，触发投掷与命中两段演出。')
+        yield head
 
     arms_setup = prep(4, 4, 'slime', 'slimeForm3Me') + ['@set xSwitchSystemDebugSlimePhase=3']
     arms_cmd = ['@set v15WarriorArms=1','@set yValSlimeWarriorReviveCount=3',
                 '@set actionTargetId=GetEnemyStr(xSlimeSlot)', '@gosub Battle.SlimeWarriorRememberBodyBeforeSteal',
                 '@gosub Battle.SlimeRevealAfterBodySteal', '@gosub Battle.SlimePhase3EndBranch']
-    arms = _battle_action(flow, gallery, 'Battle.Action.WarriorArms', 'Warrior', 4, '战士的左手与主角的右手',
-        arms_setup, arms_cmd, ('SlimeWarriorRightHandSelected',),
-        [('Battle','@if battleTarget=="slime"&&xSwitchSystemDebugSlimePhase==3&&enemy{tempBattleStartEnemyCount}ResourceName=="slimeForm3Me"'),
-         ('Battle','@return if:enemy{xSlimeSlot}ResourceName!="slimeForm3Me"'),
-         ('Battle','@set xSwitchSlimeWarriorSpecialTriggered=1 if:partnerCharacter=="warrior"'),
-         ('Battle','@goto .SlimeWarriorSpecialBranch if:partnerCharacter=="warrior"'),
-         ('Battle','@if yValSlimeWarriorReviveCount>=3'), ('Battle','@goto .SlimeWarriorCombinationAttack'),
-         ('Battle','# SlimeWarriorLeftHandChoice'),('Battle','# SlimeWarriorRightHandChoice'),
-         ('Battle','@set enemy{xSlimeSlot}Death=1')], '在第三形态重现身体被夺后的剧情。两只手依次使用原本的破坏模式指令。')
-    preset = arms['presets'][0]
-    arms['presets'] = [dict(preset, title=title, actionAtFirstCommand=dict(
-        target=COMMAND, commands=['@set playerHealth='+hp] + arms_cmd)) for title,hp in [
-            ('主角毫发无伤', 'playerMaxHealth'), ('主角负伤', 'Ceiling(playerMaxHealth*0.6)'), ('主角重伤', '1')]]
-    arms['actionAtFirstCommand'] = arms['presets'][0]['actionAtFirstCommand']
-    yield arms
+    with flow.review('Battle.Action.WarriorArms'):
+        arms = _battle_action(flow, gallery, 'Battle.Action.WarriorArms', 'Warrior', 4, '战士的左手与主角的右手',
+            arms_setup, arms_cmd, ('SlimeWarriorRightHandSelected',),
+            [('Battle','@if battleTarget=="slime"&&xSwitchSystemDebugSlimePhase==3&&enemy{tempBattleStartEnemyCount}ResourceName=="slimeForm3Me"'),
+             ('Battle','@return if:enemy{xSlimeSlot}ResourceName!="slimeForm3Me"'),
+             ('Battle','@set xSwitchSlimeWarriorSpecialTriggered=1 if:partnerCharacter=="warrior"'),
+             ('Battle','@goto .SlimeWarriorSpecialBranch if:partnerCharacter=="warrior"'),
+             ('Battle','@if yValSlimeWarriorReviveCount>=3'), ('Battle','@goto .SlimeWarriorCombinationAttack'),
+             ('Battle','# SlimeWarriorLeftHandChoice'),('Battle','# SlimeWarriorRightHandChoice'),
+             ('Battle','@set enemy{xSlimeSlot}Death=1')], '在第三形态重现身体被夺后的剧情。两只手依次使用原本的破坏模式指令。')
+        preset = arms['presets'][0]
+        arms['presets'] = [dict(preset, title=title, actionAtFirstCommand=dict(
+            target=COMMAND, commands=['@set playerHealth='+hp] + arms_cmd)) for title,hp in [
+                ('主角毫发无伤', 'playerMaxHealth'), ('主角负伤', 'Ceiling(playerMaxHealth*0.6)'), ('主角重伤', '1')]]
+        arms['actionAtFirstCommand'] = arms['presets'][0]['actionAtFirstCommand']
+        yield arms
 
 
 def _game_over_route(flow):
@@ -322,53 +327,64 @@ def integrate(catalog_scenes, flow, gallery_rows):
         flags = {'xSwitchChoiceOutcastFinal'+key: int(key == letter) for key in 'ABCDE'}
         court.append((title, dict(flags, xSwitchWarriorAtamaBreak=0)))
     court.append(('战斗中击碎了头颅（此前选择放过）', dict(court[0][1], xSwitchWarriorAtamaBreak=1)))
-    entries.append(_entry(flow, gallery_rows, S2, 'VillainessBattleAfter', 2, 4, '战后裁决 · 前未婚妻', court,
-                          prepare=('@gosub Dungeon.BeforeSpecialBattleAfterChoice',),
-                          evidence=_proof(flow, S2, 'VillainessBattleAfter', [
-                              '@if xSwitchWarriorAtamaBreak==1', '# ChoiceWarriorBattleAfterKutsugaesuS',
-                              '@set xSwitchChoiceWarriorBattleAfterKutsugaesuS=1',
-                              '@goto .KorosanaiPoint if:xSwitchChoiceOutcastFinalB!=1'])))
-    entries.append(_entry(flow, gallery_rows, S2, 'DealerBattleAfter', 2, 3, '荷官战后 · 未曾说出的解释', plain,
-                          prepare=('@gosub Dungeon.BeforeSpecialBattleAfterChoice',),
-                          evidence=_proof(flow, S2, 'Villainess3', ['@gosub Scenario.DealerBattleCore',
-                                      '@gosub Dungeon.BeforeSpecialBattleAfterChoice', '# DealerBattleAfter'])))
-    entries.append(_entry(flow, gallery_rows, S4, 'Slime2', 4, 2, '幻象与战士的绿光剑', plain,
-                          evidence=_proof(flow, S4, 'Slime2', ['@gosub Dungeon.ResetRouletteState',
-                                      '# RouletteStop', '# ClearButtonAfter', '@set xSwitchWarriorDestroyMode=1',
-                                      '@set battleTarget="warrior4SlimeServants"', '@gosub Battle'])))
+    with flow.review(S2+'.VillainessBattleAfter'):
+        entries.append(_entry(flow, gallery_rows, S2, 'VillainessBattleAfter', 2, 4, '战后裁决 · 前未婚妻', court,
+                              prepare=('@gosub Dungeon.BeforeSpecialBattleAfterChoice',),
+                              evidence=_proof(flow, S2, 'VillainessBattleAfter', [
+                                  '@if xSwitchWarriorAtamaBreak==1', '# ChoiceWarriorBattleAfterKutsugaesuS',
+                                  '@set xSwitchChoiceWarriorBattleAfterKutsugaesuS=1',
+                                  '@goto .KorosanaiPoint if:xSwitchChoiceOutcastFinalB!=1'])))
+    with flow.review(S2+'.DealerBattleAfter'):
+        entries.append(_entry(flow, gallery_rows, S2, 'DealerBattleAfter', 2, 3, '荷官战后 · 未曾说出的解释', plain,
+                              prepare=('@gosub Dungeon.BeforeSpecialBattleAfterChoice',),
+                              evidence=_proof(flow, S2, 'Villainess3', ['@gosub Scenario.DealerBattleCore',
+                                          '@gosub Dungeon.BeforeSpecialBattleAfterChoice', '# DealerBattleAfter'])))
+    with flow.review(S4+'.Slime2'):
+        entries.append(_entry(flow, gallery_rows, S4, 'Slime2', 4, 2, '幻象与战士的绿光剑', plain,
+                              evidence=_proof(flow, S4, 'Slime2', ['@gosub Dungeon.ResetRouletteState',
+                                          '# RouletteStop', '# ClearButtonAfter', '@set xSwitchWarriorDestroyMode=1',
+                                          '@set battleTarget="warrior4SlimeServants"', '@gosub Battle'])))
 
-    src = flow.sources[S4]
-    scoped = copy(flow)
-    scoped.sources = flow.sources.copy()
-    added = copy(src)
-    added.labels = dict(src.labels)
-    for section, name in [(2, AFTER_SERVANTS), (1, 'V15FallenRescuersAfter')]:
-        added.labels[name] = _slime_post_slot(src.text, src.kinds, section)
-    scoped.sources[S4] = added
-    entries.append(_entry(scoped, gallery_rows, S4, 'V15FallenRescuersAfter', 4, 1, '昔日救援队的亡骸', plain,
-                          evidence=_proof(flow, S4, 'Slime1', ['@gosub Battle', '@gosub Dungeon.BeforeNovelHideUI',
-                                                                 '@return'])))
-    entries.append(_entry(scoped, gallery_rows, S4, AFTER_SERVANTS, 4, 2, '仆从战后 · 战士的觉醒', plain,
-                          prepare=('@set xSwitchWarriorDestroyMode=1',),
-                          evidence=_proof(flow, S4, 'Slime2', ['@gosub Battle', '@gosub Dungeon.BeforeNovelHideUI',
-                                      '# KakuseiCutTest', '@set learnTargetSwitch="xSwitchWarriorDestroyMode"',
-                                      '@gosub Func.Learn', '@return'])))
-    entries.append(_entry(flow, gallery_rows, S4, 'GiantBattleAfter', 4, 3, '巨人战后的交谈', plain,
-                          prepare=('@gosub Dungeon.BeforeNovelHideUIWithoutMenu',),
-                          evidence=_proof(flow, S4, 'Slime3', ['@gosub Scenario.GiantBattleCore',
-                                                               '# GiantBattleAfter', '@return'])))
+    def after_servants(section, label):
+        src = flow.sources[S4]
+        scoped = copy(flow)
+        scoped.sources = flow.sources.copy()
+        added = copy(src)
+        added.labels = dict(src.labels)
+        added.labels[label] = _slime_post_slot(src.text, src.kinds, section)
+        scoped.sources[S4] = added
+        return scoped
+    with flow.review(S4+'.V15FallenRescuersAfter'):
+        scoped = after_servants(1, 'V15FallenRescuersAfter')
+        entries.append(_entry(scoped, gallery_rows, S4, 'V15FallenRescuersAfter', 4, 1, '昔日救援队的亡骸', plain,
+                              evidence=_proof(flow, S4, 'Slime1', ['@gosub Battle', '@gosub Dungeon.BeforeNovelHideUI',
+                                                                     '@return'])))
+    with flow.review(S4+'.'+AFTER_SERVANTS):
+        scoped = after_servants(2, AFTER_SERVANTS)
+        entries.append(_entry(scoped, gallery_rows, S4, AFTER_SERVANTS, 4, 2, '仆从战后 · 战士的觉醒', plain,
+                              prepare=('@set xSwitchWarriorDestroyMode=1',),
+                              evidence=_proof(flow, S4, 'Slime2', ['@gosub Battle', '@gosub Dungeon.BeforeNovelHideUI',
+                                          '# KakuseiCutTest', '@set learnTargetSwitch="xSwitchWarriorDestroyMode"',
+                                          '@gosub Func.Learn', '@return'])))
+    with flow.review(S4+'.GiantBattleAfter'):
+        entries.append(_entry(flow, gallery_rows, S4, 'GiantBattleAfter', 4, 3, '巨人战后的交谈', plain,
+                              prepare=('@gosub Dungeon.BeforeNovelHideUIWithoutMenu',),
+                              evidence=_proof(flow, S4, 'Slime3', ['@gosub Scenario.GiantBattleCore',
+                                                                   '# GiantBattleAfter', '@return'])))
 
     arrivals = [('援军及时赶到', {'xSwitchWarriorFinalHelpArrived': 1}),
                 ('援军未赶到', {'xSwitchWarriorFinalHelpArrived': 0})]
     for n, who, level, title in [(1, 'mage', 14, '第一道幻影之后 · 与魔法师道别'),
                                   (2, 'hero', 16, '第二道幻影之后 · 勇者与放逐者'),
                                   (3, 'priest', 28, '第三道幻影之后 · 与僧侣道别')]:
-        entries.append(_illusion_approach(flow, gallery_rows, n, who, level))
+        with flow.review(f'{S5}.Last{n}'):
+            entries.append(_illusion_approach(flow, gallery_rows, n, who, level))
         label = f'Last{n}BattleAfter'
-        entries.append(_entry(flow, gallery_rows, S5, label, 5, n+1, title, arrivals,
-                              prepare=_companion(who, level),
-                              evidence=_proof(flow, S5, f'Last{n}', ['@gosub Battle', '# '+label,
-                                          '@if xSwitchWarriorFinalHelpArrived==1'])))
+        with flow.review(S5+'.'+label):
+            entries.append(_entry(flow, gallery_rows, S5, label, 5, n+1, title, arrivals,
+                                  prepare=_companion(who, level),
+                                  evidence=_proof(flow, S5, f'Last{n}', ['@gosub Battle', '# '+label,
+                                              '@if xSwitchWarriorFinalHelpArrived==1'])))
 
     beliefs = []
     for key, title in [('Yokatta', '曾庆幸获救'), ('Uramu', '曾怨恨自己被救'),
@@ -377,22 +393,25 @@ def integrate(catalog_scenes, flow, gallery_rows):
         beliefs.append((title, flags))
     # The original flips xSwitchWarriorGlitchEnd and re-enters its own dialogue. Do not
     # treat this mutable flag as an immutable input to the trace or replace the choices.
-    decision_proof = _proof(flow, S5, 'WarriorBattleBefore', ['# WarriorChoiceBefore', '# WarriorTomeru2',
-        '@set battleTarget="warriorFinalDuel"', '@gosub Battle', '# WarriorGlitchEnd',
-        '@set xSwitchWarriorGlitchEnd=1', '@set endingType="warriorGlitchBad"',
-        '@gosub Ending.ResumeStory', '@goto .WarriorBattleBeforePoint'])
-    decision_proof += _proof(flow, 'Ending', 'ResumeStory',
-                             ['@set xSwitchEndingResumeStory=1', '@gosub .Core', '@return'])
-    entries.append(_entry(flow, gallery_rows, S5, 'WarriorBattleBefore', 5, 5, '王座前 · 阻止或接受战士',
-                          beliefs, prepare=ALONE + ('@set xSwitchWarriorGlitchEnd=0',),
-                          known={'partnerCharacter': '', 'xSwitchEndingResumeStory': 1,
-                                 'endingType': 'warriorGlitchBad'}, evidence=decision_proof))
+    with flow.review(S5+'.WarriorBattleBefore'):
+        decision_proof = _proof(flow, S5, 'WarriorBattleBefore', ['# WarriorChoiceBefore', '# WarriorTomeru2',
+            '@set battleTarget="warriorFinalDuel"', '@gosub Battle', '# WarriorGlitchEnd',
+            '@set xSwitchWarriorGlitchEnd=1', '@set endingType="warriorGlitchBad"',
+            '@gosub Ending.ResumeStory', '@goto .WarriorBattleBeforePoint'])
+        decision_proof += _proof(flow, 'Ending', 'ResumeStory',
+                                 ['@set xSwitchEndingResumeStory=1', '@gosub .Core', '@return'])
+        entries.append(_entry(flow, gallery_rows, S5, 'WarriorBattleBefore', 5, 5, '王座前 · 阻止或接受战士',
+                              beliefs, prepare=ALONE + ('@set xSwitchWarriorGlitchEnd=0',),
+                              known={'partnerCharacter': '', 'xSwitchEndingResumeStory': 1,
+                                     'endingType': 'warriorGlitchBad'}, evidence=decision_proof))
 
     entries.extend(_other_battles(flow, gallery_rows))
-    entries.append(_stop_battle(flow, gallery_rows))
-    flags, evidence, trace = _game_over_route(flow)
-    entries.append(_entry(flow, gallery_rows, S5, 'WarriorBattleAfter', 6, 5, '全灭之后 · 回到一级',
-                          [('原作入口', flags)], prepare=ALONE, trace_func=trace, evidence=evidence))
+    with flow.review('Battle.Action.WarriorStopBattle'):
+        entries.append(_stop_battle(flow, gallery_rows))
+    with flow.review(S5+'.WarriorBattleAfter'):
+        flags, evidence, trace = _game_over_route(flow)
+        entries.append(_entry(flow, gallery_rows, S5, 'WarriorBattleAfter', 6, 5, '全灭之后 · 回到一级',
+                              [('原作入口', flags)], prepare=ALONE, trace_func=trace, evidence=evidence))
     endings = []
     for name, first_choice, reversal, glitch in (
             ('放下武器', 0, 0, 0), ('动手之后', 1, 0, 0), ('经历异变', 0, 0, 1),
@@ -400,12 +419,13 @@ def integrate(catalog_scenes, flow, gallery_rows):
         endings.append((name, dict(xSwitchChoiceOutcastFinalB=first_choice,
                                    xSwitchChoiceWarriorBattleAfterKutsugaesuS=reversal,
                                    xSwitchWarriorGlitchEnd=glitch)))
-    entries.append(_entry(flow, gallery_rows, S5, 'WarriorLv1DuelAfter', 6, 5, '决斗之后', endings,
-                          known={'xSwitchEndingResumeStory': 0},
-                          evidence=_proof(flow, S5, 'WarriorLv1DuelAfter', [
-                              '@goto .KillEnding', '# NotKillEnding',
-                              '@if xSwitchChoiceWarriorBattleAfterKutsugaesuS!=1||xSwitchWarriorGlitchEnd==1',
-                              '# EndingGouryuu', '@goto Ending'])))
+    with flow.review(S5+'.WarriorLv1DuelAfter'):
+        entries.append(_entry(flow, gallery_rows, S5, 'WarriorLv1DuelAfter', 6, 5, '决斗之后', endings,
+                              known={'xSwitchEndingResumeStory': 0},
+                              evidence=_proof(flow, S5, 'WarriorLv1DuelAfter', [
+                                  '@goto .KillEnding', '# NotKillEnding',
+                                  '@if xSwitchChoiceWarriorBattleAfterKutsugaesuS!=1||xSwitchWarriorGlitchEnd==1',
+                                  '# EndingGouryuu', '@goto Ending'])))
     # Insert after the source's lead-in when possible. This also keeps presorted legacy
     # entries and other authors' additions in their original positions.
     after = {'DealerBattleAfter': 'Villainess3', AFTER_SERVANTS: 'Slime2', 'V15FallenRescuersAfter': 'Slime1',

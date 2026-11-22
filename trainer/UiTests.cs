@@ -19,7 +19,7 @@ class UiTests
         var windowType = assembly.GetType("TrainerWindow");
         using (var form = (Form)Activator.CreateInstance(windowType))
         {
-            Check(form.Text.Contains("v1.5"), "version");
+            Check(form.Text.Contains("v1.6"), "version");
             var tabs = (TabControl)form.Controls[0];
             var tabHandle = tabs.Handle;
             Check(tabs.TabPages.Count == 3, "CG tab present alongside the two existing tabs");
@@ -31,6 +31,7 @@ class UiTests
             foreach (Control control in saves.Controls)
                 if (control is Panel) Check(control.Enabled, "save operations container enabled");
             Check(tabs.TabPages[0].Controls.Count > 10, "existing UI retained");
+            Check(tabs.TabPages[0].Controls.Find("applyCurse", true).Length == 1, "shared currency belongs on the role and battle tab");
             Check(tabs.TabPages[2].Text == "剧情回放", "native replay tab name");
         }
         using (var form = (Form)Activator.CreateInstance(windowType, new object[] { false, false, true }))

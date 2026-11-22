@@ -20,8 +20,10 @@ from addressables import bundle_locations
 import catalog_crc
 if __package__:
     from .script_reader import read_lines
+    from .stock_controls import TEMPLATES
 else:
     from script_reader import read_lines
+    from stock_controls import TEMPLATES
 import UnityPy
 from UnityPy.helpers.TypeTreeHelper import read_typetree, write_typetree
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter
@@ -38,20 +40,30 @@ I64 = struct.Struct("<q")
 def _bundle(game):
     catalog = Path(game) / AA / "catalog.bin"
     names = [n for n in bundle_locations(catalog.read_bytes())
-             if re.fullmatch(r"naninovel_assets_naninovel_[0-9a-fA-F]{32}\.bundle", n)]
+             if re.fullmatch(r"naninovel_assets_naninovel(?:_[A-Za-z0-9-]+)?\.bundle", n, re.I)]
     if len(names) != 1:
         raise ValueError("Expected one registered Naninovel script bundle")
     return catalog.parent / PLATFORM / names[0]
 
 
+class ScriptDirectory(dict):
+    def __init__(self):
+        super().__init__()
+        self.unavailable = {}
+
+
 def _scripts(env):
-    result = {}
+    result = ScriptDirectory()
     for asset in env.assets:
         for name, ptr in asset.container.items():
             if name.startswith("Assets/Novel/") and name.endswith(".nani"):
                 key = Path(name).stem
-                if key in result or ptr.m_FileID:
-                    raise ValueError(f"Duplicate or external script {key}")
+                if key in result.unavailable:
+                    continue
+                if key in result or ptr.m_FileID or ptr.m_PathID not in asset.objects:
+                    result.pop(key, None)
+                    result.unavailable[key] = f"当前原作脚本 {key} 存在重名或未解析的外部引用"
+                    continue
                 result[key] = asset.objects[ptr.m_PathID]
     if not result:
         raise ValueError("No compiled Naninovel scripts in the registered bundle")
@@ -62,7 +74,15 @@ def read_script_rows(game):
     """Inspect only the registered script bundle; same row shape as v1.4 inspect_game."""
     with _bundle(game).open("rb") as stream:
         env = UnityPy.load(stream)
-        return {name: read_lines(obj) for name, obj in _scripts(env).items()}
+        scripts = _scripts(env)
+        rows = ScriptDirectory()
+        rows.unavailable.update(scripts.unavailable)
+        for name, obj in scripts.items():
+            try:
+                rows[name] = read_lines(obj)
+            except (ValueError, struct.error) as error:
+                rows.unavailable[name] = f"当前脚本 {name} 的行表无法解析：{error}"
+        return rows
 
 
 def _string(text):
@@ -206,25 +226,6 @@ class _Types:
         self.regex = re.compile(b"|".join(map(re.escape, self.by_header)))
 
 
-# Pure stock commands supply defaults specific to this game build. Literal values
-# and playback locations are replaced below. No custom game assembly is needed.
-TEMPLATES = {
-    "goto": ("Scenario_Mage2", r"@goto [\w.]+"),
-    "gosub": ("Scenario_Mage2", r"@gosub [\w.]+"),
-    "set": ("Scenario_Mage2", r'@set \w+="\w+"'),
-    "storeEnemyNextActionSet": ("Battle", r'@storeEnemyNextActionSet enemyId:\{yValWarriorFinalSlot\} actionSetName:"warriorFinalBerserkStrength"'),
-    "choice": ("Scenario_Mage2", r'@choice "[^"{}]+" goto:[\w.]+'),
-    "stop": ("Scenario_Mage2", r"@stop"),
-    "hidePrinter": ("Scenario_Mage2", r"@hidePrinter"),
-    "wait": ("Battle", r"@wait i"),
-    "hideUI": ("Battle", r"@hideUI \w+"),
-    "clearChoice": ("Action", r"@clearChoice \*"),
-    "title": ("Dungeon", r"@title"),
-    "save": ("Dungeon", r"@save"),
-    "back": ("Opening", r'@back "none"'),
-}
-
-
 def _param(data, field, value):
     p = data[field]
     p["value"] = value
@@ -268,13 +269,21 @@ class _Library:
 
     def template(self, name):
         if name not in self.templates:
-            script, pattern = TEMPLATES[name]
-            s = self.script(script)
-            pattern = re.compile(pattern)
-            for i in range(len(s.lines)):
-                kind, _, text, _ = s.line(i)
-                if kind == "CommandScriptLine" and pattern.fullmatch(text.strip()):
-                    self.templates[name] = s.command(i)[:2]
+            preferred, signature = TEMPLATES[name]
+            pattern = re.compile(signature)
+            for script in dict.fromkeys((preferred, *self.objects)):
+                if script not in self.objects:
+                    continue
+                try:
+                    source = self.script(script)
+                except (ValueError, struct.error):
+                    continue
+                for i in range(len(source.lines)):
+                    kind, _, text, _ = source.line(i)
+                    if kind == "CommandScriptLine" and pattern.fullmatch(text.strip()):
+                        self.templates[name] = source.command(i)[:2]
+                        break
+                if name in self.templates:
                     break
             else:
                 raise ValueError(f"No stock template for @{name}")

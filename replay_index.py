@@ -1,4 +1,4 @@
-"""Build the V1.5 source-line index and independent-art measurements from the V1.4 catalogue."""
+"""Keep stable gallery IDs and artwork geometry. Native source rows are resolved at launch."""
 
 
 def make_replay_index(gallery):

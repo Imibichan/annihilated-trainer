@@ -113,6 +113,12 @@ public static class GalleryTests
         Touch(Path.Combine(game, "Annihilated.exe"));
         Directory.CreateDirectory(Path.Combine(game, "Annihilated_Data"));
         var roots = new[] { Path.GetDirectoryName(steam) };
+        string replayCopy = Directory.CreateDirectory(Path.Combine(temp, "V1.5 旧副本")).FullName;
+        Touch(Path.Combine(replayCopy, "Annihilated.exe"));
+        Directory.CreateDirectory(Path.Combine(replayCopy, "Annihilated_Data"));
+        Touch(Path.Combine(replayCopy, ".orien-replay-copy.json"));
+        Check(!GalleryLocation.IsGameDirectory(replayCopy), "replay copy cannot be selected as the source game");
+        Check(GalleryLocation.Find(replayCopy, roots) == game, "old saved selection falls back to the official installation");
         Check(GalleryLocation.Find(null, roots) == game, "detect custom install in second Steam library");
         Check(GalleryLocation.Find(game, new string[0]) == game, "remembered install works outside Steam");
         Check(GalleryLocation.Find(steam, roots) == game, "stale choice falls back to Steam");

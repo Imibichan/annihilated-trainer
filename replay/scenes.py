@@ -6,6 +6,7 @@ before their first executable instruction and return to the menu on a natural to
 Never expose a candidate as playable. script-reviewed describes static evidence only.
 """
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 import re
 
 
@@ -34,7 +35,7 @@ def story_reset_commands(scripts):
         'G_xSwitchFirstDeadOnPriestEventEnd', 'G_xSwitchFirstDeadOnPriestRefused',
         'G_xSwitchFirstDeadOnPriestWelcomeBackSeen',
     }
-    for row in scripts['Ending']:
+    for row in scripts.get('Ending', ()):
         match = re.match(r'@set (G_xSwitchEndingSeen_\w+)=1\b', row[3].strip())
         if match:
             progress.add(match[1])
@@ -66,6 +67,7 @@ class _Source:
         self.text = [row[3].strip() for row in rows]
         self.kinds = [row[1] for row in rows]
         self.labels = {}
+        self.ambiguous_labels = set()
         self.false = {}
         self.join = {}
         self.menu_wait = set()
@@ -73,7 +75,10 @@ class _Source:
         menu_pending = False
         for i, (kind, line) in enumerate(zip(self.kinds, self.text)):
             if kind == 'Label':
-                self.labels.setdefault(line.lstrip('#').strip(), i)
+                label = line.lstrip('#').strip()
+                if label in self.labels:
+                    self.ambiguous_labels.add(label)
+                self.labels.setdefault(label, i)
                 menu_pending = False
             if kind != 'Command':
                 continue
@@ -101,12 +106,24 @@ class _Source:
 class ScriptMap:
     def __init__(self, scripts):
         self.sources = {name: _Source(rows) for name, rows in scripts.items()}
+        self.excluded = {}
+
+    @contextmanager
+    def review(self, scene_id):
+        """A failed native proof invalidates this menu entry alone."""
+        try:
+            yield
+        except (ValueError, LookupError, StopIteration) as error:
+            self.excluded[scene_id] = str(error) or '缺少原作指令或入口'
 
     def trace(self, source, label, flags=None, boundaries=(), battle_exit=None):
         known = {'isTrial': False, 'isEditor': False, 'isDebugMode': False}
         known.update(flags or {})
         exits, issues, choices, visited = set(), set(), set(), defaultdict(set)
         returns = battle = False
+        if label in self.sources[source].ambiguous_labels:
+            return dict(visited={}, exits=[], returns=False, battle=False, choices=0,
+                        issues=['原作入口重名 ' + source + '.' + label])
         start = self.sources[source].labels[label] if label else 0
         work = [(source, start, ())]
         seen = set()
@@ -183,6 +200,9 @@ class ScriptMap:
             if dest.startswith('.'):
                 dest = name + dest
             target_name, _, target_label = dest.partition('.')
+            if target_name in self.sources and target_label in self.sources[target_name].ambiguous_labels:
+                issues.add(f'{name}:{i} 原作跳转目标重名 {dest}')
+                continue
             if dest in boundaries:
                 exits.add(dest)
                 continue
@@ -231,8 +251,6 @@ class ScriptMap:
 
 def independent_artworks(gallery):
     artwork = [s for s in gallery['scenes'] if s['source'] == 'Extras']
-    if len(artwork) != 15 or any(not s['frames'] or s.get('type') != 'asset' for s in artwork):
-        raise ValueError('独立画稿目录与 v1.4 的 15 项不符')
     return artwork
 
 
@@ -416,7 +434,8 @@ def _entries(flow):
 
 def _select_art(visited, gallery_rows):
     return [s['id'] for s in gallery_rows if s['source'] in visited and
-            s['line'] in visited[s['source']] and s['source'] not in ('Ending', 'Title')]
+            s['source'] not in ('Ending', 'Title') and
+            any(line in visited[s['source']] for line in s.get('nativeLines', (s['line'],)))]
 
 
 def _battle_bridge(source, label):
@@ -447,10 +466,13 @@ def _boundaries(source, label, flow):
         if label.startswith('PartnerChoiceEnd'):
             return ('Opening3.PartnerChoice',)
         if label == 'priestScene':
-            line = 1533
-            if flow.sources[source].text[line].lower() != '@quickload':
+            src = flow.sources[source]
+            start = src.labels['priestChoiceGisikiYes']
+            end = min((i for i in src.labels.values() if i > start), default=len(src.text))
+            matches = [i for i in range(start, end) if src.text[i].lower() == '@quickload']
+            if len(matches) != 1:
                 raise ValueError('序章祭祀的原作快速读取位置已变化')
-            return ('Opening3.hanasiChoice', f'Opening3.@{line}')
+            return ('Opening3.hanasiChoice', f'Opening3.@{matches[0]}')
         return ('Opening3.hanasiChoice',)
     if source == 'Opening2':
         return ('Opening3.hanasiChoice',)
@@ -538,7 +560,8 @@ def _villainess_regeneration(flow, gallery_rows):
 
 
 def _battle_actions(flow, gallery_rows):
-    yield _villainess_regeneration(flow, gallery_rows)
+    with flow.review('Battle.Action.VillainessRegeneration'):
+        yield _villainess_regeneration(flow, gallery_rows)
     # One remaining target represents the turn after the servants have disappeared.
     # Stock AddEnemies assigns slot 1. The normal damaging command is submitted to
     # PlayerAttack; EnemyDeathCheck owns the actual CG, dialogue and phase restart.
@@ -563,10 +586,11 @@ def _battle_actions(flow, gallery_rows):
         ('Battle', '@set xSwitchVillainessSpiderForm=1'),
         ('Battle', '@gosub .RequestBattlePhaseRestart if:xSwitchVillainessSpiderForm==1&&xVillainessSlot>0&&enemy{xVillainessSlot}Death!=1'),
     ]
-    yield _battle_action(flow, gallery_rows, 'Battle.Action.VillainessSecondForm', 'Hero', 2,
-                         '反派千金 · 第二形态', setup, commands,
-                         ('VillainessSecondFormTransitionCore', 'VillainessReSkipSecondFormText'),
-                         proof, '勇者同行，人偶退场；普通攻击击倒第一形态，原作死亡检查触发变身。')
+    with flow.review('Battle.Action.VillainessSecondForm'):
+        yield _battle_action(flow, gallery_rows, 'Battle.Action.VillainessSecondForm', 'Hero', 2,
+                             '反派千金 · 第二形态', setup, commands,
+                             ('VillainessSecondFormTransitionCore', 'VillainessReSkipSecondFormText'),
+                             proof, '勇者同行，人偶退场；普通攻击击倒第一形态，原作死亡检查触发变身。')
 
     # The first phase summons eight separate targetable limbs. The second and third
     # start with the priest alone. The original pre-command support scene is normally
@@ -600,73 +624,73 @@ def _battle_actions(flow, gallery_rows):
             ('Battle', '@return if:enemy{xPriestFinalSlot}Health>0&&enemy{xPriestFinalSlot}Death!=1'),
             ('Battle', '@gosub .PriestFinalPhaseClearText'), ('Battle', marker),
         ]
-        yield _battle_action(flow, gallery_rows, f'Battle.Action.MagePriestPhase{phase}', 'Mage', 5,
-                             title, setup, commands, (f'CG/{ally}AllyCut', cut), proof,
-                             '以原作形态选择值初始化；保留同伴支援，自动提交普通攻击，顺接原作反击演出。')
+        with flow.review(f'Battle.Action.MagePriestPhase{phase}'):
+            yield _battle_action(flow, gallery_rows, f'Battle.Action.MagePriestPhase{phase}', 'Mage', 5,
+                                 title, setup, commands, (f'CG/{ally}AllyCut', cut), proof,
+                                 '以原作形态选择值初始化；保留同伴支援，自动提交普通攻击，顺接原作反击演出。')
 
 
 def build_catalog(scripts, gallery):
     """Return serializable scene records, original independent artwork, and an ID coverage audit."""
     flow = ScriptMap(scripts)
     artwork = independent_artworks(gallery)
-    gallery_rows = gallery['scenes']
+    if __package__:
+        from .source_anchors import resolve_gallery
+    else:
+        from source_anchors import resolve_gallery
+    gallery_rows, missing_art = resolve_gallery(scripts, gallery)
     scenes = []
-    dispatch = flow.sources['Dungeon'].text
-    required = ('@gosub Scenario_{tempPartnerName}{dungeonId}.{bossId}{temp}',
-                '@gosub Scenario_{tempPartnerName}{dungeonId}.{bossId}BattleBefore',
-                '@gosub Scenario_{tempPartnerName}{tempScenarioDungeonId}.ToDungeon{tempScenarioDungeonId}')
-    if any(c not in dispatch for c in required):
-        raise ValueError('原作迷宫的角色章节分发已变化')
     for source, label, group, chapter, title, dungeon, section, issue in _entries(flow):
         if source not in flow.sources or label and label not in flow.sources[source].labels:
             continue
         uid = f'{source}.{label}' if label else source
-        conversation = source == 'Opening3'
-        presets = []
-        for preset_title, flags in _presets(group, chapter, label):
-            boundaries = _boundaries(source, label, flow)
-            battle_exit = 'Battle.InitializeCommand' if _battle_bridge(source, label) else None
-            route = flow.trace(source, label, dict(flags, partnerCharacter=group.lower()), boundaries,
-                               battle_exit=battle_exit)
-            if (source, label) == ('Scenario_Priest5', 'ToDungeon5') and route['battle']:
-                route['exits'].append('Battle.SelectAnyItemByTurn')
-            natural_title = '@title' in route['exits']
-            if natural_title:
-                route['exits'].remove('@title')
-            issues = list(route['issues'])
-            if issue:
-                issues.append(issue)
-            ids = _select_art(route['visited'], gallery_rows)
-            ids.extend(_ending_art(source, label, flags, route, gallery_rows))
-            if route['battle'] and 'Battle.InitializeCommand' in route['exits']:
-                # Demonstrated stock control flow before that very first manual input.
-                labels = ()
-                if chapter == 1 and label == 'OutcastBattleBefore':
-                    labels = {'Hero': ('SkipBgm', 'OutcastHeroCutCore'), 'Priest': ('OutcastHeroCutCore',)}.get(group, ())
-                if source == 'Scenario_Warrior5' and label == 'Last2':
-                    labels = ('WarriorIllusionBStartText',)
-                ids.extend(s['id'] for s in gallery_rows if s['source'] == 'Battle' and s['label'] in labels)
-            setup = _setup(group, dungeon, section, flags, label, conversation)
-            if source == 'Opening2':
-                setup = []
-            if (source, label) == ('Scenario', 'FirstDeadOnPriest'):
-                setup.extend(['@set G_xSwitchFirstDeadOnPriestEventEnd=0',
-                              '@set G_xSwitchFirstDeadOnPriestWelcomeBackSeen=0',
-                              '@set G_xSwitchFirstDeadOnPriestRefused=0', '@gosub Func.HideBackground'])
-            presets.append(dict(title=preset_title, setupCommands=setup,
-                                exits=route['exits'], naturalReturn=route['returns'], naturalTitle=natural_title,
-                                choices=route['choices'],
-                                galleryIds=ids, issues=issues, status='candidate' if issues else 'script-reviewed'))
-        checked = [p for p in presets if p['status'] == 'script-reviewed']
-        first = next(iter(checked), presets[0])
-        scenes.append(dict(id=uid, group=group, chapter=chapter, title=title, source=source, label=label,
-                           line=flow.sources[source].labels[label] if label else 0, setupCommands=first['setupCommands'],
-                           exits=sorted({x for p in checked or presets for x in p['exits']}),
-                           naturalReturn=any(p['naturalReturn'] for p in checked or presets),
-                           naturalTitle=any(p['naturalTitle'] for p in checked or presets),
-                           boundary='return' if first['naturalReturn'] and not first['exits'] else 'label',
-                           galleryIds=list(dict.fromkeys(x for p in checked or presets for x in p['galleryIds'])),
-                           presets=presets, status=first['status'], evidence='原作剧情入口及静态控制流'))
+        with flow.review(uid):
+            conversation = source == 'Opening3'
+            presets = []
+            for preset_title, flags in _presets(group, chapter, label):
+                boundaries = _boundaries(source, label, flow)
+                battle_exit = 'Battle.InitializeCommand' if _battle_bridge(source, label) else None
+                route = flow.trace(source, label, dict(flags, partnerCharacter=group.lower()), boundaries,
+                                   battle_exit=battle_exit)
+                if (source, label) == ('Scenario_Priest5', 'ToDungeon5') and route['battle']:
+                    route['exits'].append('Battle.SelectAnyItemByTurn')
+                natural_title = '@title' in route['exits']
+                if natural_title:
+                    route['exits'].remove('@title')
+                issues = list(route['issues'])
+                if issue:
+                    issues.append(issue)
+                ids = _select_art(route['visited'], gallery_rows)
+                ids.extend(_ending_art(source, label, flags, route, gallery_rows))
+                if route['battle'] and 'Battle.InitializeCommand' in route['exits']:
+                    # Demonstrated stock control flow before that very first manual input.
+                    labels = ()
+                    if chapter == 1 and label == 'OutcastBattleBefore':
+                        labels = {'Hero': ('SkipBgm', 'OutcastHeroCutCore'), 'Priest': ('OutcastHeroCutCore',)}.get(group, ())
+                    if source == 'Scenario_Warrior5' and label == 'Last2':
+                        labels = ('WarriorIllusionBStartText',)
+                    ids.extend(s['id'] for s in gallery_rows if s['source'] == 'Battle' and s['label'] in labels)
+                setup = _setup(group, dungeon, section, flags, label, conversation)
+                if source == 'Opening2':
+                    setup = []
+                if (source, label) == ('Scenario', 'FirstDeadOnPriest'):
+                    setup.extend(['@set G_xSwitchFirstDeadOnPriestEventEnd=0',
+                                  '@set G_xSwitchFirstDeadOnPriestWelcomeBackSeen=0',
+                                  '@set G_xSwitchFirstDeadOnPriestRefused=0', '@gosub Func.HideBackground'])
+                presets.append(dict(title=preset_title, setupCommands=setup,
+                                    exits=route['exits'], naturalReturn=route['returns'], naturalTitle=natural_title,
+                                    choices=route['choices'],
+                                    galleryIds=ids, issues=issues, status='candidate' if issues else 'script-reviewed'))
+            checked = [p for p in presets if p['status'] == 'script-reviewed']
+            first = next(iter(checked), presets[0])
+            scenes.append(dict(id=uid, group=group, chapter=chapter, title=title, source=source, label=label,
+                               line=flow.sources[source].labels[label] if label else 0, setupCommands=first['setupCommands'],
+                               exits=sorted({x for p in checked or presets for x in p['exits']}),
+                               naturalReturn=any(p['naturalReturn'] for p in checked or presets),
+                               naturalTitle=any(p['naturalTitle'] for p in checked or presets),
+                               boundary='return' if first['naturalReturn'] and not first['exits'] else 'label',
+                               galleryIds=list(dict.fromkeys(x for p in checked or presets for x in p['galleryIds'])),
+                               presets=presets, status=first['status'], evidence='原作剧情入口及静态控制流'))
     scenes.extend(_battle_actions(flow, gallery_rows))
     import hero_replay, mage_replay, warrior_replay, priest_replay
     hero_replay.integrate(scenes, flow, gallery_rows)
@@ -675,6 +699,7 @@ def build_catalog(scripts, gallery):
     priest_replay.integrate(scenes, flow, gallery_rows)
     # Post-battle callbacks are recovered separately from their map event.
     # Place them between that encounter and the next story beat in the directory.
+    scenes = [s for s in scenes if s['id'] not in flow.excluded]
     by_scene = {s['id']: s for s in scenes}
     earlier = {
         'Scenario_Hero2.VillainessBattleBefore': ['Scenario_Hero2.VillainessAfterDealer'],
@@ -693,10 +718,13 @@ def build_catalog(scripts, gallery):
     }
     for next_id, preceding in earlier.items():
         for scene_id in preceding:
+            if scene_id not in by_scene or next_id not in by_scene:
+                continue
             scene = by_scene[scene_id]
             scenes.remove(scene)
             scenes.insert(scenes.index(by_scene[next_id]), scene)
-    by_id = {s['id']: 'pending' for s in gallery_rows}
+    by_id = {s['id']: 'pending' for s in gallery['scenes']}
+    by_id.update({s['id']: 'pending' for s in gallery_rows})
     for s in scenes:
         for p in s['presets']:
             for old_id in p['galleryIds']:
@@ -706,8 +734,11 @@ def build_catalog(scripts, gallery):
         by_id[s['id']] = 'artwork'
     candidate_issues = {scene['id']: sorted({reason for p in scene['presets'] for reason in p['issues']})
                         for scene in scenes if any(p['issues'] for p in scene['presets'])}
-    pending_sources = Counter(row['source'] for row in gallery_rows if by_id[row['id']] == 'pending')
+    pending_sources = Counter(row['source'] for row in gallery['scenes'] if by_id[row['id']] == 'pending')
+    legacy_ids = {s['id'] for s in gallery['scenes']}
+    added_cues = {key: by_id.pop(key) for key in list(by_id) if key not in legacy_ids}
     return dict(scenes=scenes, artworks=artwork,
                 coverage=dict(byGalleryId=by_id, counts=dict(Counter(by_id.values())),
                               pendingBySource=dict(pending_sources), candidateIssues=candidate_issues,
+                              unresolvedArtwork=missing_art, nativeIllustrations=added_cues, excluded=flow.excluded,
                               sceneCounts=dict(Counter(s['status'] for s in scenes))))

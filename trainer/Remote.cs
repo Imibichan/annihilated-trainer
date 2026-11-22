@@ -36,10 +36,25 @@ public sealed class Remote : IDisposable {
  [DllImport("kernel32")] static extern uint WaitForSingleObject(IntPtr h,uint ms);
  [DllImport("kernel32")] static extern bool CloseHandle(IntPtr h);
  [DllImport("kernel32")] static extern bool FlushInstructionCache(IntPtr p,IntPtr a,UIntPtr n);
- public Remote() {
+ public static bool IsReplayExecutable(string executable){
+  return File.Exists(Path.Combine(Path.GetDirectoryName(executable),".orien-replay-copy.json"));
+ }
+ static Process FindGame(){
   var found=Process.GetProcessesByName("Annihilated");
-  if(found.Length!=1)throw new Exception(found.Length==0?"请先启动游戏。":"发现多个游戏进程，请只保留一个。");
-  Process=found[0];identity=Process.Id+":"+Process.StartTime.ToUniversalTime().Ticks;
+  Process selected=null;
+  try{
+   foreach(var candidate in found){
+    if(candidate.HasExited||IsReplayExecutable(candidate.MainModule.FileName))continue;
+    if(selected!=null)throw new InvalidOperationException("发现多个正式游戏进程，请只保留一个。");
+    selected=candidate;
+   }
+   if(selected==null)throw new InvalidOperationException("请先启动正式游戏并进入存档。");
+   return selected;
+  }catch{selected=null;throw;}
+  finally{foreach(var candidate in found)if(candidate!=selected)candidate.Dispose();}
+ }
+ public Remote() {
+  Process=FindGame();identity=Process.Id+":"+Process.StartTime.ToUniversalTime().Ticks;
   uncertainMarker=Path.Combine(Path.GetTempPath(),"AnnihilatedTrainer-"+identity.Replace(':','-')+".unsafe");
   lock(uncertainProcesses)if(uncertainProcesses.Contains(identity)||File.Exists(uncertainMarker))throw new Exception("本次游戏会话曾发生调用超时。请重启游戏后再连接，不能直接重连。");
   Handle=OpenProcess(0x43A,false,Process.Id);
@@ -50,8 +65,9 @@ public sealed class Remote : IDisposable {
     GameHash=hash;string data=Path.Combine(Path.GetDirectoryName(m.FileName),"Annihilated_Data");
     string catalog=Path.Combine(data,"StreamingAssets","aa","catalog.hash");ContentHash=File.Exists(catalog)?File.ReadAllText(catalog).Trim():"";
     byte[] pe=Compatibility.Prefix(m.FileName,4096),metadata=Compatibility.Prefix(Path.Combine(data,"il2cpp_data","Metadata","global-metadata.dat"),8);string unity=Compatibility.ReadUnityVersion(Path.Combine(data,"globalgamemanagers"));
-    Compatibility.ValidateStatic(pe,metadata,unity,Compatibility.RequiredExports); // Header/ABI checks before reading the mapped export table.
-    LoadExports();Compatibility.ValidateStatic(pe,metadata,unity,exports.Keys);
+    string nativePlayer=Compatibility.ReadNativePlayerVersion(Path.GetDirectoryName(m.FileName));
+    Compatibility.ValidateStatic(pe,metadata,unity,Compatibility.RequiredExports,nativePlayer); // Header/ABI checks before reading the mapped export table.
+    LoadExports();Compatibility.ValidateStatic(pe,metadata,unity,exports.Keys,nativePlayer);
     foreach(string name in Compatibility.RequiredExports){long address=exports[name];if(address<GameBase||address>=GameBase+m.ModuleMemorySize)throw new InvalidDataException("IL2CPP export address outside module: "+name);}
     StaticEnvelopeValidated=true;
    }

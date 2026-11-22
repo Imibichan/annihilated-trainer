@@ -39,7 +39,7 @@ def builtins():
     ]
 
 
-def make_program(scripts, scenes, artworks, assets=()):
+def make_program(scripts, scenes, artworks, assets=(), *, builtin_entries=None):
     from scenes import story_reset_commands
     edits = defaultdict(dict)
     tape = []
@@ -82,7 +82,8 @@ def make_program(scripts, scenes, artworks, assets=()):
     def chapter_name(n):
         return {0:"序章", 6:"终章", 7:"其他回忆", 8:"迷宫偶遇"}.get(n, f"第 {n} 层")
 
-    all_scenes = builtins() + [s for s in scenes if s["status"] in {"script-reviewed","live-verified"}]
+    selected_builtins = builtins() if builtin_entries is None else builtin_entries
+    all_scenes = selected_builtins + [s for s in scenes if s["status"] in {"script-reviewed","live-verified"}]
     active = []
     sections = defaultdict(list)
     for scene in all_scenes:
@@ -90,6 +91,7 @@ def make_program(scripts, scenes, artworks, assets=()):
             continue
         active.append(scene)
         sections[(scene["group"], scene["chapter"])].append((len(active),scene))
+    active_ids = {s['id'] for s in active}
     art_rows = [(len(active) + i, a) for i,a in enumerate(artworks,1)]
     # Keep the last item stable when a game update adds other scenes earlier in its route.
     objects = active + list(artworks)
@@ -190,9 +192,11 @@ def make_program(scripts, scenes, artworks, assets=()):
              f'@set slimeSanninsyouJp="{slime_jp}";slimeSanninsyou="{slime_en}" {condition}')
     emit(donor("@return"))
     emit("# Finish","@clearChoice *","@title")
-    emit("# BreakInput", "@goto .Finish if:v15ActionIssued==1",
-         '@set v15ActionIssued=1;enemy1Break=1;selectCommand=-1;selectionEnemyTargetId="enemy1"',
-         "@goto Battle.PlayerAttack")
+    tutorial = 'tutorial-break' in active_ids
+    if tutorial:
+        emit("# BreakInput", "@goto .Finish if:v15ActionIssued==1",
+             '@set v15ActionIssued=1;enemy1Break=1;selectCommand=-1;selectionEnemyTargetId="enemy1"',
+             "@goto Battle.PlayerAttack")
     for flag, action in automatic_actions.items():
         emit(f"# Trigger{flag}", "@goto .Finish if:v15ActionIssued==1", "@set v15ActionIssued=1")
         for cmd in action["commands"]:
@@ -200,7 +204,7 @@ def make_program(scripts, scenes, artworks, assets=()):
         emit("@goto "+action["target"])
     # Use the engine's normal animation and action effect. The only part simulated here
     # is the player's timing-bar input; its deterministic target is the tutorial slime.
-    battle = scripts["Battle"]
+    battle = scripts.get("Battle", ())
     boss_targets = [flag for flag, action in automatic_actions.items() if action.get('selectBoss')]
     if boss_targets:
         # The phase-one priest summons eight targetable limbs. Keep the living
@@ -214,10 +218,11 @@ def make_program(scripts, scenes, artworks, assets=()):
         target_scenes = '||'.join(f'v15Scene=={flag}' for flag in boss_targets)
         edits['Battle'][target_row] = (f'@set tempActionTargetArr="" if:({target_scenes})'
                                        '&&v15ActionIssued==1&&selectCommand==-1')
-    before = unique(battle,lambda r:r[3].strip()=="@if tempClicks>0","timing input")
-    if battle[before-1][1] not in ("Empty","Comment"):
-        raise ValueError("攻击输入边界已改变")
-    edits["Battle"][before-1] = "@set tempClicks=0 if:v15Tutorial==1||v15AutoTiming==1"
+    if tutorial or any(a.get('skipTiming') for a in automatic_actions.values()):
+        before = unique(battle,lambda r:r[3].strip()=="@if tempClicks>0","timing input")
+        if battle[before-1][1] not in ("Empty","Comment"):
+            raise ValueError("攻击输入边界已改变")
+        edits["Battle"][before-1] = "@set tempClicks=0 if:v15Tutorial==1||v15AutoTiming==1"
     # Insert at a non-executable line to catch both named jumps and natural fallthrough.
     # Mark the beginning of control, never the intermediate showUI in a cutscene.
     def guard(target, flags):
@@ -228,7 +233,7 @@ def make_program(scripts, scenes, artworks, assets=()):
             pos += 1
         if label.startswith("@"):
             original = int(label[1:])
-            if rows[original][3].strip().lower() != "@quickload":
+            if original in edits[name] or rows[original][3].strip().lower() != "@quickload":
                 raise ValueError("回放预期的原作读档位置已改变："+target)
             entry = "V15BeforeLoad"+str(original)
             edits[name][original] = "@goto ."+entry
@@ -240,7 +245,8 @@ def make_program(scripts, scenes, artworks, assets=()):
         alias = "V15Stock"+str(original)
         extra = ["# "+label]
         if target == "Battle.InitializeCommand":
-            extra.append("@goto Test2.BreakInput if:v15Tutorial==1")
+            if tutorial:
+                extra.append("@goto Test2.BreakInput if:v15Tutorial==1")
             extra.extend(f"@goto Test2.Trigger{flag} if:v15Scene=={flag}" for flag in automatic_actions)
         for flag in sorted(set(flags)):
             extra.append(f"@goto Test2.Finish if:v15Scene=={flag}")
@@ -248,30 +254,41 @@ def make_program(scripts, scenes, artworks, assets=()):
         edits[name].update({pos+i:v for i,v in enumerate(extra)})
         # Named calls and natural fallthrough both pass the guard. Only move the
         # old label into a spare source row; all original commands retain their indices.
-        if original+1 < len(rows) and rows[original+1][1] in ("Empty","Comment"):
+        if original in edits[name]:
+            raise ValueError("回放终点与另一条控制指令重叠 " + target)
+        if original+1 < len(rows) and rows[original+1][1] in ("Empty","Comment") and original+1 not in edits[name]:
             edits[name][original] = "@goto ."+label
             edits[name][original+1] = "# "+alias
-        elif original and rows[original-1][1] in ("Empty","Comment"):
+        elif original and rows[original-1][1] in ("Empty","Comment") and original-1 not in edits[name]:
             edits[name][original-1] = "@goto ."+label
             edits[name][original] = "# "+alias
         else:
             raise ValueError("无法定位回放终点 "+target)
+    if tutorial or automatic_actions:
+        exit_rules.setdefault("Battle.InitializeCommand", [])
     for target, flags in exit_rules.items():
         guard(target,flags)
     currency = unique(scripts["First"], lambda r: r[3].strip() == "@set curse=0", "回放初始货币")
     edits["First"][currency] = "@set curse=999"
     # Stock immediately accepts success. Offer the original paid controls for either
     # result, keeping native costs, refunds, fixed outcomes and story callbacks.
-    dungeon = scripts["Dungeon"]
-    settle = unique(dungeon, lambda r: r[3].strip() == '@if curse<rotateNeedCurse||rouletteResult=="success"',
-                    "轮盘结算")
-    if dungeon[settle-1][1] not in ("Empty", "Comment") or settle-1 in edits["Dungeon"]:
-        raise ValueError("无法定位回放轮盘的调整入口")
-    label_at(dungeon, "RouletteEnd")
-    edits["Dungeon"][settle-1] = "@goto .RouletteEnd if:curse>=rotateNeedCurse"
+    dungeon_wheel = builtin_entries is None or any(s['source'] == 'Dungeon' or s['id'] == 'Scenario_Hero1.Outcast1' for s in active)
+    if dungeon_wheel:
+        dungeon = scripts["Dungeon"]
+        settle = unique(dungeon, lambda r: r[3].strip() == '@if curse<rotateNeedCurse||rouletteResult=="success"',
+                        "轮盘结算")
+        if dungeon[settle-1][1] not in ("Empty", "Comment") or settle-1 in edits["Dungeon"]:
+            raise ValueError("无法定位回放轮盘的调整入口")
+        label_at(dungeon, "RouletteEnd")
+        edits["Dungeon"][settle-1] = "@goto .RouletteEnd if:curse>=rotateNeedCurse"
     # Keep the wheel, sound, random result and subsequent story choices in the original game.
     # Only the two mechanical button presses are automatic in the private player.
     for name in ("Dungeon", "Scenario_Warrior4"):
+        if builtin_entries is not None:
+            if name == "Dungeon" and not dungeon_wheel:
+                continue
+            if name == "Scenario_Warrior4" and "Scenario_Warrior4.Slime2" not in active_ids:
+                continue
         rows = scripts[name]
         patch = edits[name]
         cursor = max([len(rows)] + [i + 1 for i in patch])
@@ -293,8 +310,120 @@ def make_program(scripts, scenes, artworks, assets=()):
         if line.strip()=="@goto Opening":
             edits["First"][idx] = "@goto Test2.Resume"
     edits[MENU].update(enumerate(tape))
+    for idx in range(len(tape), len(scripts[MENU])):
+        edits[MENU][idx] = ";"
     import hero_replay, priest_replay, warrior_replay
-    priest_replay.patch_program(edits, scripts)
-    warrior_replay.patch_program(edits, scripts)
+    priest_replay.patch_program(edits, scripts, active_ids)
+    warrior_replay.patch_program(edits, scripts, active_ids)
     hero_replay.patch_program(edits, scripts)
     return dict(edits)
+
+
+def compile_replays(scripts, gallery, *, artwork_addresses=None):
+    """Build one verified menu; report individual entries affected by a game update."""
+    import json
+    from pathlib import Path
+    from dungeon_scenes import TITLES, add_dungeon_helpers, build_dungeon_scenes
+    from program_checks import ProgramChecks
+    from scenes import build_catalog
+
+    catalog = build_catalog(scripts, gallery)
+    coverage = catalog['coverage']
+    unavailable_scripts = getattr(scripts, 'unavailable', {})
+    from source_anchors import missing_cues
+    unavailable = missing_cues(scripts, gallery, artwork_addresses) if artwork_addresses is not None else {}
+    excluded = dict(coverage['excluded'])
+    try:
+        dungeon = build_dungeon_scenes(scripts, gallery)
+    except (ValueError, LookupError) as error:
+        dungeon = []
+        excluded.update({f'Dungeon.event{n}': str(error) for n in TITLES})
+    records = [('builtin', s) for s in builtins()]
+    excluded_presets = {}
+    for scene in catalog['scenes'] + dungeon:
+        if scene['status'] in ('script-reviewed', 'live-verified'):
+            if unavailable:
+                presets = []
+                for preset in scene.get('presets', [scene]):
+                    reason = next((unavailable[k] for k in preset.get('galleryIds', ()) if k in unavailable), '')
+                    if reason:
+                        excluded_presets.setdefault(scene['id'], {})[preset.get('title', scene['title'])] = reason
+                    elif preset.get('status') in ('script-reviewed', 'live-verified'):
+                        presets.append(preset)
+                if not presets:
+                    excluded[scene['id']] = '；'.join(dict.fromkeys(excluded_presets.get(scene['id'], {}).values()))
+                    continue
+                if 'presets' in scene:
+                    scene = dict(scene, presets=presets)
+            records.append(('story', scene))
+            for preset in scene.get('presets', ()):
+                if preset['status'] not in ('script-reviewed', 'live-verified'):
+                    excluded_presets.setdefault(scene['id'], {})[preset['title']] = '；'.join(preset['issues'])
+        else:
+            reasons = coverage['candidateIssues'].get(scene['id']) or scene.get('issues', ())
+            excluded[scene['id']] = '；'.join(reasons) or '原作运行条件有变化'
+    for art in catalog['artworks']:
+        if art['id'] in unavailable:
+            excluded[art['id']] = unavailable[art['id']]
+        elif art.get('type') == 'asset' and len(art.get('frames', ())) == 1:
+            records.append(('art', art))
+        else:
+            excluded[art['id']] = '独立画稿缺少图层信息'
+
+    # This historical list supplies names for removed entries in the report.
+    # It never determines whether a scene can play or limits new native entries.
+    known = json.loads(Path(__file__).with_name('known_scenes.json').read_bytes())
+    present = {s['id'] for _, s in records}
+    for uid, title in known.items():
+        if uid not in present:
+            reason = unavailable_scripts.get(uid.partition('.')[0], '当前游戏缺少已核对的原作入口')
+            excluded.setdefault(uid, title + '：' + reason)
+    checks = ProgramChecks(scripts)
+
+    def compile_group(group):
+        stories = [s for kind, s in group if kind == 'story']
+        original = [s for kind, s in group if kind == 'builtin']
+        artworks = [s for kind, s in group if kind == 'art']
+        edits = make_program(scripts, stories, artworks, gallery['assets'], builtin_entries=original)
+        if any(s['source'] == 'Dungeon' for s in stories):
+            add_dungeon_helpers(edits, scripts)
+        checks.validate(edits)
+        return edits
+
+    failures = (LookupError, ValueError)
+    try:
+        edits = compile_group(records)
+    except failures:
+        # A moved input hook or missing donor must not disable independent entries.
+        # Validate in directory order, halving failed batches to find the culprit.
+        # Keeping accepted entries in each retry detects cross-entry patch conflicts.
+        accepted = []
+        edits = compile_group([])
+        def append_compatible(batch):
+            nonlocal edits
+            if not batch:
+                return
+            try:
+                compiled = compile_group(accepted + batch)
+            except failures as error:
+                if len(batch) == 1:
+                    excluded[batch[0][1]['id']] = str(error)
+                else:
+                    middle = len(batch) // 2
+                    append_compatible(batch[:middle])
+                    append_compatible(batch[middle:])
+            else:
+                accepted.extend(batch)
+                edits = compiled
+        append_compatible(records)
+        records = accepted
+    return edits, {
+        'scenes': sum(kind != 'art' for kind, _ in records),
+        'artworks': sum(kind == 'art' for kind, _ in records),
+        'candidates': len(excluded),
+        'excluded': excluded,
+        'excludedPresets': excluded_presets,
+        'unavailableScripts': unavailable_scripts,
+        'unresolvedArtwork': coverage['unresolvedArtwork'],
+        'nativeIllustrations': coverage['nativeIllustrations'],
+    }

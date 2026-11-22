@@ -53,9 +53,12 @@ def _timing_inputs(battle):
     return i, i+1
 
 
-def patch_program(edits, scripts):
+def patch_program(edits, scripts, active_ids=None):
     """Install the isolated player's single-card inputs and battle-form initialization."""
-    priest = scenes._Source(scripts[P5])
+    final = active_ids is None or P5 + '.PriestBattleAfterHighLoop' in active_ids
+    forms = active_ids is None or any(uid.startswith('Battle.Action.PriestGlausForm') for uid in active_ids)
+    if not (final or forms):
+        return
     battle = scenes._Source(scripts['Battle'])
 
     def append(name, idx, new_call, body):
@@ -66,20 +69,25 @@ def patch_program(edits, scripts):
         patch[idx] = new_call
         patch.update({pos+n: row for n, row in enumerate(body)})
 
-    for src, _, stop, dest in _card_inputs(priest, battle):
-        name = P5 if src is priest else 'Battle'
-        entry = 'V15Press' + dest
-        append(name, stop, '@goto .' + entry, [
-            '# ' + entry, '@goto .' + entry + 'Auto if:v15Scene>0', (name, stop),
-            '# ' + entry + 'Auto', '@wait 0.5', '@goto .' + dest])
-    stock_return = ('Battle', _within(battle, TIMING, 'PriestFinalBuildDestroyModeHand', '@return'))
-    for n, idx in enumerate(_timing_inputs(battle)):
-        entry = f'V15PriestFinalAim{n}'
-        # The two waits do not feed a result into the subsequent story. The stock
-        # cleanup immediately clears the bar and proceeds with its authored attack.
-        append('Battle', idx, '@gosub .' + entry, [
-            '# ' + entry, '@goto .' + entry + 'Done if:v15Scene>0', ('Battle', idx),
-            '# ' + entry + 'Done', stock_return])
+    if final:
+        priest = scenes._Source(scripts[P5])
+        for src, _, stop, dest in _card_inputs(priest, battle):
+            name = P5 if src is priest else 'Battle'
+            entry = 'V15Press' + dest
+            append(name, stop, '@goto .' + entry, [
+                '# ' + entry, '@goto .' + entry + 'Auto if:v15Scene>0', (name, stop),
+                '# ' + entry + 'Auto', '@wait 0.5', '@goto .' + dest])
+        stock_return = ('Battle', _within(battle, TIMING, 'PriestFinalBuildDestroyModeHand', '@return'))
+        for n, idx in enumerate(_timing_inputs(battle)):
+            entry = f'V15PriestFinalAim{n}'
+            # The two waits do not feed a result into the subsequent story. The stock
+            # cleanup immediately clears the bar and proceeds with its authored attack.
+            append('Battle', idx, '@gosub .' + entry, [
+                '# ' + entry, '@goto .' + entry + 'Done if:v15Scene>0', ('Battle', idx),
+                '# ' + entry + 'Done', stock_return])
+    if not forms:
+        return
+    stock_return = ('Battle', battle.text.index('@return'))
     # Battle.Start otherwise sets phase 1 even when given the real phase-2/3
     # resource explicitly. Set before the original phase-dependent partner/UI setup.
     start = _within(battle, 'Start', 'SkipBgm', '@set xGlausFinalPhase=1')
@@ -91,37 +99,50 @@ def patch_program(edits, scripts):
         '@set xGlausFinalPhase=3 if:v15Scene>0&&addEnemyResourceNames=="demonLordForm3"', stock_return])
 
 
-def _review_flow(flow):
-    """Trace verified presentation-only callbacks and the same private input replacements."""
+def _review_flow(flow, name=None, label=None):
+    """Follow only the native presentation callbacks needed by the current entry."""
+    all_callbacks = name is None
+    fourth_floor = all_callbacks or (name, label) == (P4, 'SlimeBattleAfter')
+    last_fight = all_callbacks or (name, label) == (P5, 'PriestBattleAfterHighLoop')
+    demon_lord = all_callbacks or (name, label) == (P5, 'DemonLordBattleBefore')
+    if not (fourth_floor or last_fight or demon_lord):
+        return flow
     view = copy(flow)
     view.sources = dict(flow.sources)
-    for name in (P4, P5, 'Battle'):
-        src = copy(flow.sources[name])
+    def editable(script):
+        src = copy(flow.sources[script])
         src.text = list(src.text)
-        view.sources[name] = src
-    priest, fourth, battle = (view.sources[n] for n in (P5, P4, 'Battle'))
-    go = flow.sources['GameOver']
-    content = [s for s in go.text[go.labels['ForPriest4Ensyutu']+1:] if s.startswith('@')]
-    if len(content) != 2 or not content[0].startswith('@text "GameoverText"') or content[1] != '@return':
-        raise ValueError('第四层假 Game Over 不再是可返回的原作文字演出')
-    view.sources['PriestDeathText'] = go
-    i = _within(fourth, 'SlimeSanLowBattleAfter', 'SlimeBattleAfterSanHigh', '@gosub GameOver.ForPriest4Ensyutu')
-    fourth.text[i] = '@gosub PriestDeathText.ForPriest4Ensyutu'
-    # Only these named Battle subroutines are entered as a novel. Each relative
-    # jump is still traced inside the real source. Ordinary @gosub Battle retains
-    # the shared first-command guard.
-    view.sources['PriestBattleHelpers'] = battle
-    for start, end, helper in (
-        ('DemonLordBattleBefore', 'Epilogue', 'GlausFinalSetupTemporaryPartner'),
-        ('PriestBattlePostBattleFinisher', 'PriestBattleHighLoopBeforeFinisher', 'PriestFinalDestroyModeDefaultWeaponPowerUp'),
-        ('PriestBattleHighLoopFinisher', 'PriestBattleAfterHighLoop', STRIKE),
-    ):
-        i = _within(priest, start, end, '@gosub Battle.'+helper)
-        priest.text[i] = '@gosub PriestBattleHelpers.'+helper
-    for src, card, stop, dest in _card_inputs(priest, battle):
-        src.text[card] = '@clearChoice BattleCommand'  # a presentation, never a narrative branch
-        src.text[stop] = '@goto .'+dest
-    _timing_inputs(battle)
+        view.sources[script] = src
+        return src
+
+    if fourth_floor:
+        fourth = editable(P4)
+        go = flow.sources['GameOver']
+        content = [s for s in go.text[go.labels['ForPriest4Ensyutu']+1:] if s.startswith('@')]
+        if len(content) != 2 or not content[0].startswith('@text "GameoverText"') or content[1] != '@return':
+            raise ValueError('第四层假 Game Over 不再是可返回的原作文字演出')
+        view.sources['PriestDeathText'] = go
+        i = _within(fourth, 'SlimeSanLowBattleAfter', 'SlimeBattleAfterSanHigh', '@gosub GameOver.ForPriest4Ensyutu')
+        fourth.text[i] = '@gosub PriestDeathText.ForPriest4Ensyutu'
+    if last_fight or demon_lord:
+        priest, battle = editable(P5), editable('Battle')
+        view.sources['PriestBattleHelpers'] = battle
+        callbacks = []
+        if demon_lord:
+            callbacks.append(('DemonLordBattleBefore', 'Epilogue', 'GlausFinalSetupTemporaryPartner'))
+        if last_fight:
+            callbacks.extend((
+                ('PriestBattlePostBattleFinisher', 'PriestBattleHighLoopBeforeFinisher', 'PriestFinalDestroyModeDefaultWeaponPowerUp'),
+                ('PriestBattleHighLoopFinisher', 'PriestBattleAfterHighLoop', STRIKE),
+            ))
+        for start, end, helper in callbacks:
+            i = _within(priest, start, end, '@gosub Battle.'+helper)
+            priest.text[i] = '@gosub PriestBattleHelpers.'+helper
+        if last_fight:
+            for src, card, stop, dest in _card_inputs(priest, battle):
+                src.text[card] = '@clearChoice BattleCommand'
+                src.text[stop] = '@goto .'+dest
+            _timing_inputs(battle)
     return view
 
 
@@ -220,7 +241,8 @@ def _other_battles(flow, gallery):
         commands = ['@set enemy1Health=1', '@set enemy1StateBlock=0', '@set enemy1StateBarrier=0',
                     '@set enemy1StateEvading=0', '@set selectCommand=-1', '@set selectionEnemyTargetId="enemy1"']
         variants.append((title, setup, commands, 'Battle.PlayerAttack', []))
-    yield encounter('PriestDropout', 3, '落选者 · 第二形态', dropout, variants)
+    with flow.review('Battle.Action.PriestDropout'):
+        yield encounter('PriestDropout', 3, '落选者 · 第二形态', dropout, variants)
 
     setup = scenes._setup('Priest', 7, 1, dict(G_gameLoopCount=9), '') + [
         '@set backgroundName="last"', '@gosub Func.ShowBackground', '@gosub Func.ShowSettings',
@@ -239,12 +261,13 @@ def _other_battles(flow, gallery):
         ('Battle', '@gosub .PriestFinalPriestRouteCurseRecoveryEffect'),
         ('Battle', '@gosub .PriestFinalPriestRouteDeath1Text'),
     ]
-    yield encounter('PriestCounter', 5, '僧侣决战 · 破解与复生', proof, [
-        ('破解防御', setup, ['@set enemy{xPriestFinalSlot}StateBlock=0', '@set selectCommand=-1',
-                          '@set selectionEnemyTargetId="enemy1"'], 'Battle.PlayerAttack', []),
-        ('未能破解 · 用诅咒复生', setup, ['@set curse=10', '@set playerHealth=0', check],
-         'Battle.RebuildBattleCommand', []),
-    ])
+    with flow.review('Battle.Action.PriestCounter'):
+        yield encounter('PriestCounter', 5, '僧侣决战 · 破解与复生', proof, [
+            ('破解防御', setup, ['@set enemy{xPriestFinalSlot}StateBlock=0', '@set selectCommand=-1',
+                              '@set selectionEnemyTargetId="enemy1"'], 'Battle.PlayerAttack', []),
+            ('未能破解 · 用诅咒复生', setup, ['@set curse=10', '@set playerHealth=0', check],
+             'Battle.RebuildBattleCommand', []),
+        ])
     proof = [
         ('Battle', '@set xSwitchPriestFinalCurseShortageGameOver=1'),
         ('Battle', '@if xSwitchPriestFinalHeroDeathFirstGameOver==1||xSwitchPriestFinalCurseShortageGameOver==1'),
@@ -263,13 +286,13 @@ def _other_battles(flow, gallery):
                 f'@set xSwitchPriestFinalCurseShortageTextEverShown={int(i>0)}',
                 '@set curse=0', '@set playerHealth=0', check]
         shortages.append((title, setup, cmds, 'Battle.RebuildBattleCommand', ['GameOver.Choice']))
-    yield encounter('PriestCurseShortage', 5, '僧侣决战 · 诅咒耗尽', proof, shortages)
+    with flow.review('Battle.Action.PriestCurseShortage'):
+        yield encounter('PriestCurseShortage', 5, '僧侣决战 · 诅咒耗尽', proof, shortages)
 
 
 def _demon_lord_battles(flow, gallery):
     # Each defeated form is replaced with a healthy enemy. The game then restarts
     # the battle turn and solicits a new command, so each finisher is its own event.
-    battle = flow.sources['Battle']
     for phase, (title, cg) in enumerate((
             ('放逐者与勇者', 'outcastAllyCutLight'), ('落选者与魔法师', 'dropoutAllyCutLight'),
             ('千金与战士', 'villainessAllyCutLight')), 1):
@@ -298,21 +321,22 @@ def _demon_lord_battles(flow, gallery):
         ]
         # The first CG row stages a transparent image; the gallery indexes the
         # following visible native tween. Require the exact appearance and label.
-        matches = [r for r in gallery if r['source'] == 'Battle' and r['label'] == callback and
-                   f'"CG/{cg}"' in battle.text[r['line']] and 'tint:"#FFFFFFFF"' in battle.text[r['line']]]
-        if len(matches) != 1:
-            raise ValueError('魔王战原作援护插画已变化 '+callback)
-        scene = scenes._battle_action(flow, gallery, f'Battle.Action.PriestGlausForm{phase}', 'Priest', 5,
-                                     '讨伐魔王 · '+title, setup, commands, (callback,), proof,
-                                     '以原作队伍进入相应形态，击倒后由游戏执行援护与变身，至下次选择指令。')
-        if scene['galleryIds'] != [matches[0]['id']]:
-            raise ValueError('魔王战援护插画的归属已变化 '+callback)
-        yield scene
+        with flow.review(f'Battle.Action.PriestGlausForm{phase}'):
+            battle = flow.sources['Battle']
+            matches = [r for r in gallery if r['source'] == 'Battle' and r['label'] == callback and
+                       f'"CG/{cg}"' in battle.text[r['line']] and 'tint:"#FFFFFFFF"' in battle.text[r['line']]]
+            if len(matches) != 1:
+                raise ValueError('魔王战原作援护插画已变化 '+callback)
+            scene = scenes._battle_action(flow, gallery, f'Battle.Action.PriestGlausForm{phase}', 'Priest', 5,
+                                         '讨伐魔王 · '+title, setup, commands, (callback,), proof,
+                                         '以原作队伍进入相应形态，击倒后由游戏执行援护与变身，至下次选择指令。')
+            if scene['galleryIds'] != [matches[0]['id']]:
+                raise ValueError('魔王战援护插画的归属已变化 '+callback)
+            yield scene
 
 
 def integrate(catalog_scenes, flow, gallery_rows):
     """Replace unaudited post-fight placeholders and add the missing story continuations."""
-    view = _review_flow(flow)
     added = []
 
     def result(route, name, label, flags):
@@ -323,6 +347,7 @@ def integrate(catalog_scenes, flow, gallery_rows):
         return ids
 
     def preset(name, label, title, floor, section, flags, *, story_flags=None, setup=(), preceding=None, rewind=False):
+        view = _review_flow(flow, name, label)
         known = dict(flags, partnerCharacter='priest')
         known.update(story_flags or {})
         stop = ('Scenario_Priest3.DropoutChoiceBefore',) if rewind else ()
@@ -363,55 +388,65 @@ def integrate(catalog_scenes, flow, gallery_rows):
                           galleryIds=list(dict.fromkeys(s for p in presets for s in p['galleryIds'])),
                           evidence='原作战后回调、分歧条件及返回路径已静态核对'))
 
-    p2 = flow.sources[P2]
-    _within(p2, 'SentakusiMisuteru', 'MageHeroBattleAfter', '@set battleTarget="mage"')
-    _within(p2, 'SentakusiMisuteru', 'MageHeroBattleAfter', '@set battleTarget="hero"')
-    _within(p2, 'SkipNaiEnsyutu', 'SentakusiMisuteru', '@goto .VillainessBattleAfter')
-    add(P2, 'MageHeroBattleAfter', 2, '舍弃伙伴之后', [
-        preset(P2, 'MageHeroBattleAfter', '背弃伙伴', 2, 4, dict(xSwitchPriestNakamaMisuteru=1, playerSanity=0),
-               setup=['@stopBgm', '@set backgroundName="cave_moss"', '@gosub Func.HideBackground',
-                      '@gosub Func.ShowBackground', '@sfx fs_heartbeat loop:true pitch:1.5',
-                      '@changeVolume Vignette from:0 value:0.5 time:2 loop:true wait:false ui:false',
-                      '@gosub Dungeon.AfterSpecialChoice'])])
-    add(P2, 'VillainessBattleAfter', 2, '千金战后 · 关于那颗头颅', [
-        preset(P2, 'VillainessBattleAfter', '拒绝舍弃伙伴', 2, 4, dict(xSwitchBosChokuzenDekinai=1),
-               setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])])
-    add(P3, 'EliteBattle3After', 3, '海龙战后', [
-        preset(P3, 'EliteBattle3After', '击退海龙', 3, 3, {}, setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])])
+    with flow.review(P2+'.MageHeroBattleAfter'):
+        p2 = flow.sources[P2]
+        _within(p2, 'SentakusiMisuteru', 'MageHeroBattleAfter', '@set battleTarget="mage"')
+        _within(p2, 'SentakusiMisuteru', 'MageHeroBattleAfter', '@set battleTarget="hero"')
+        add(P2, 'MageHeroBattleAfter', 2, '舍弃伙伴之后', [
+            preset(P2, 'MageHeroBattleAfter', '背弃伙伴', 2, 4, dict(xSwitchPriestNakamaMisuteru=1, playerSanity=0),
+                   setup=['@stopBgm', '@set backgroundName="cave_moss"', '@gosub Func.HideBackground',
+                          '@gosub Func.ShowBackground', '@sfx fs_heartbeat loop:true pitch:1.5',
+                          '@changeVolume Vignette from:0 value:0.5 time:2 loop:true wait:false ui:false',
+                          '@gosub Dungeon.AfterSpecialChoice'])])
+    with flow.review(P2+'.VillainessBattleAfter'):
+        _within(flow.sources[P2], 'SkipNaiEnsyutu', 'SentakusiMisuteru', '@goto .VillainessBattleAfter')
+        add(P2, 'VillainessBattleAfter', 2, '千金战后 · 关于那颗头颅', [
+            preset(P2, 'VillainessBattleAfter', '拒绝舍弃伙伴', 2, 4, dict(xSwitchBosChokuzenDekinai=1),
+                   setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])])
+    with flow.review(P3+'.EliteBattle3After'):
+        add(P3, 'EliteBattle3After', 3, '海龙战后', [
+            preset(P3, 'EliteBattle3After', '击退海龙', 3, 3, {}, setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])])
     variants = [('拒绝伸出的手', REFUSE), ('看向僧侣', LOOK), ('经历过第四层的结局', AFTER_REWIND)]
     repeated = dict(REFUSE, G_gameLoopCount=9, G_gameOverPriestPartnerCount=1,
                     G_gameClearHeroCount=1, G_gameKilledByPriestCount=1)
-    add(P4, 'ToDungeon4', 4, '前往第四层 · 僧侣的回忆', [
-        preset(P4, 'ToDungeon4', t, 3, 5, f)
-        for t, f in (*variants[:2], ('记得此前的死亡与通关', repeated))])
-    add(P4, 'Slime3BattleAfter', 4, '巨人战后', [
-        preset(P4, 'Slime3BattleAfter', t, 4, 3, f, setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])
-        for t, f in variants])
-    add(P4, 'SlimeBattleAfter', 4, '史莱姆战后', [
-        preset(P4, 'SlimeBattleAfter', t, 4, 4, f, rewind=bool(f['xSwitchChoicePriestLook']),
-               story_flags={'xSwitchEndingResumeStory': 1, 'endingType': 'priest4KilledBad'},
-               setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu']) for t, f in variants[:2]])
-    add(P4, 'defaultSlimeBattleAfter', 4, '最后的史莱姆 · 救援与旁观', [
-        preset(P4, 'defaultSlimeBattleAfter', t, 4, 4, f,
-               story_flags={'xSwitchEndingResumeStory': 0, 'endingType': 'priest4NoReachBad'},
-               setup=['@set showPartnerStatus=true', '@set partnerDeath=0', '@set partnerHealth=1',
-                      '@gosub Dungeon.BeforeSpecialBattleAfterChoice'])
-        for t, f in (('首次来到这里', REFUSE), ('经历过第四层的结局', AFTER_REWIND))])
-    add(P5, 'DemonLordBattleBefore', 5, '讨伐魔王 · 决战开场', [
-        preset(P5, 'DemonLordBattleBefore', '与勇者小队同行', 10, 1, {})])
+    with flow.review(P4+'.ToDungeon4'):
+        add(P4, 'ToDungeon4', 4, '前往第四层 · 僧侣的回忆', [
+            preset(P4, 'ToDungeon4', t, 3, 5, f)
+            for t, f in (*variants[:2], ('记得此前的死亡与通关', repeated))])
+    with flow.review(P4+'.Slime3BattleAfter'):
+        add(P4, 'Slime3BattleAfter', 4, '巨人战后', [
+            preset(P4, 'Slime3BattleAfter', t, 4, 3, f, setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu'])
+            for t, f in variants])
+    with flow.review(P4+'.SlimeBattleAfter'):
+        add(P4, 'SlimeBattleAfter', 4, '史莱姆战后', [
+            preset(P4, 'SlimeBattleAfter', t, 4, 4, f, rewind=bool(f['xSwitchChoicePriestLook']),
+                   story_flags={'xSwitchEndingResumeStory': 1, 'endingType': 'priest4KilledBad'},
+                   setup=['@gosub Dungeon.BeforeNovelHideUIWithoutMenu']) for t, f in variants[:2]])
+    with flow.review(P4+'.defaultSlimeBattleAfter'):
+        add(P4, 'defaultSlimeBattleAfter', 4, '最后的史莱姆 · 救援与旁观', [
+            preset(P4, 'defaultSlimeBattleAfter', t, 4, 4, f,
+                   story_flags={'xSwitchEndingResumeStory': 0, 'endingType': 'priest4NoReachBad'},
+                   setup=['@set showPartnerStatus=true', '@set partnerDeath=0', '@set partnerHealth=1',
+                          '@gosub Dungeon.BeforeSpecialBattleAfterChoice'])
+            for t, f in (('首次来到这里', REFUSE), ('经历过第四层的结局', AFTER_REWIND))])
+    with flow.review(P5+'.DemonLordBattleBefore'):
+        add(P5, 'DemonLordBattleBefore', 5, '讨伐魔王 · 决战开场', [
+            preset(P5, 'DemonLordBattleBefore', '与勇者小队同行', 10, 1, {})])
     high = dict(G_gameLoopCount=9, xSwitchPriestFinalHighLoop=1, xSwitchPriestFinalDestroyModeDone=1,
                 xSwitchPriestFinalDestroyModeFinishTextDone=0)
-    add(P5, 'PriestBattleAfterHighLoop', 6, '最后一击与告别', [
-        preset(P5, 'PriestBattleAfterHighLoop', '高周目决战之后', 7, 1, high,
-               story_flags={'xPriestFinalRoute': 'priest', 'xSwitchEndingResumeStory': 0, 'endingType': 'priestHighLoop'},
-               preceding='PriestBattlePostBattleFinisher',
-               setup=['@set backgroundName="last"', '@gosub Func.HideBackground', '@gosub Func.ShowBackground',
-                      '@set xPriestFinalRoute="priest"', '@set xPriestFinalPhase=4',
-                      '@gosub Scenario_Priest5.PriestBattlePostBattleFinisher',
-                      '@set xSwitchCanSelectAnyItemByTurn=0', '@gosub Dungeon.BeforeSpecialBattleAfterChoice',
-                      '@back black id:ColorFlashBackground tint:#FFFFFFFF time:1 pos:,,-15.5 scale:9999999 wait:false',
-                      '@wait i1'])])
-    added.append(_fourth_form(flow, gallery_rows))
+    with flow.review(P5+'.PriestBattleAfterHighLoop'):
+        add(P5, 'PriestBattleAfterHighLoop', 6, '最后一击与告别', [
+            preset(P5, 'PriestBattleAfterHighLoop', '高周目决战之后', 7, 1, high,
+                   story_flags={'xPriestFinalRoute': 'priest', 'xSwitchEndingResumeStory': 0, 'endingType': 'priestHighLoop'},
+                   preceding='PriestBattlePostBattleFinisher',
+                   setup=['@set backgroundName="last"', '@gosub Func.HideBackground', '@gosub Func.ShowBackground',
+                          '@set xPriestFinalRoute="priest"', '@set xPriestFinalPhase=4',
+                          '@gosub Scenario_Priest5.PriestBattlePostBattleFinisher',
+                          '@set xSwitchCanSelectAnyItemByTurn=0', '@gosub Dungeon.BeforeSpecialBattleAfterChoice',
+                          '@back black id:ColorFlashBackground tint:#FFFFFFFF time:1 pos:,,-15.5 scale:9999999 wait:false',
+                          '@wait i1'])])
+    with flow.review('Battle.Action.PriestFourthForm'):
+        added.append(_fourth_form(flow, gallery_rows))
     added.extend(_other_battles(flow, gallery_rows))
     positions = {s['id']: i for i, s in enumerate(catalog_scenes)}
     for entry in added:
@@ -422,5 +457,5 @@ def integrate(catalog_scenes, flow, gallery_rows):
     demon = list(_demon_lord_battles(flow, gallery_rows))
     ids = {s['id'] for s in demon}
     catalog_scenes[:] = [s for s in catalog_scenes if s['id'] not in ids]
-    after = next(i for i, s in enumerate(catalog_scenes) if s['id'] == P5+'.DemonLordBattleBefore') + 1
+    after = next((i+1 for i, s in enumerate(catalog_scenes) if s['id'] == P5+'.DemonLordBattleBefore'), len(catalog_scenes))
     catalog_scenes[after:after] = demon

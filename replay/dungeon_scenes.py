@@ -107,10 +107,15 @@ def _check_event(number, body, label_maps):
 
 def build_dungeon_scenes(scripts, gallery):
     rows = scripts["Dungeon"]
-    maps = {name: _labels(scripts[name]) for name in ("Dungeon", "Func", "StatusFunc", "Battle", "GameOver")}
+    maps = {name: _labels(scripts.get(name, ())) for name in ("Dungeon", "Func", "StatusFunc", "Battle", "GameOver")}
     labels = maps["Dungeon"]
     before, after = _wrapper(rows, labels)
-    original_art = [s for s in gallery["scenes"] if s.get("source") == "Dungeon"]
+    if __package__:
+        from .source_anchors import resolve_gallery
+    else:
+        from source_anchors import resolve_gallery
+    mapped, _ = resolve_gallery(scripts, {"scenes": [s for s in gallery["scenes"] if s.get("source") == "Dungeon"]})
+    original_art = [s for s in mapped if s['source'] == 'Dungeon']
     records = []
     for n, title in TITLES.items():
         label = f"event{n}"

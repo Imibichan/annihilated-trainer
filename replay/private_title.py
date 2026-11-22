@@ -10,16 +10,17 @@ import tempfile
 import UnityPy
 import catalog_crc
 from title_bindings import Prefab
-from .isolation import MARKER, STOCK_HASHES, V14_HASHES, verify_copy
+from .isolation import AA, MARKER, TITLE_BUNDLE, _check_path, _same_directory, atomic_json, verify_copy
 
 
-TITLE_FILE, = [name for name in STOCK_HASHES if name.endswith(".bundle")]
-AA = Path("Annihilated_Data/StreamingAssets/aa")
 NULL = {"m_FileID": 0, "m_PathID": 0}
-# Measured from the same two baseline files verified by prepare_copy. Recovery
-# is allowed only if the current, structurally complete replay title is paired
-# with a typed catalog request that still matches one of those originals.
-BASELINE_RECORDS = {"stock": (1808649900, 316599), "published-v1.4": (742555541, 102187987)}
+
+
+def title_path(game, marker):
+    relative = Path(marker.get("titleFile", ""))
+    if relative.parent != Path(AA) / "StandaloneWindows64" or not TITLE_BUNDLE.fullmatch(relative.name):
+        raise ValueError("回放副本的标题记录无效。")
+    return _check_path(game / relative)
 
 
 def _changes(env, game):
@@ -29,10 +30,11 @@ def _changes(env, game):
     view = Prefab(assets[0], game)
     if view.row(view.root)["m_Name"] != "CustomTitleUI" or not view.row(view.root)["m_IsActive"]:
         raise ValueError("回放副本的原版 TitleUI 根节点不匹配。")
-    children = {view.row(go)["m_Name"]: go for go in view.children(view.root)}
+    children = list(view.children(view.root))
     core = {"TitleImageRight", "TitleImageLeft", "Logo", "Text (TMP)", "ButtonsPanel", "EngineVersionText"}
-    if set(children) not in (core, core | {"MemoryGallery"}):
-        raise ValueError(f"回放副本的标题层级与原版不同：{sorted(children)}")
+    names = {view.row(go)["m_Name"] for go in children}
+    if not core.issubset(names):
+        raise ValueError(f"回放副本的标题层级缺少控件：{sorted(core - names)}")
     def component(kind, **values):
         oid = view.component(view.root, kind, tuple(values))
         return oid, values
@@ -48,7 +50,7 @@ def _changes(env, game):
         component(("Assembly-CSharp", "CustomVariableExpressionTrigger"), m_Enabled=0),
         component(("Assembly-CSharp", "TitleCameraHandheldImpulse"), m_Enabled=0),
     ]
-    targets.extend((go, {"m_IsActive": False}) for go in children.values())
+    targets.extend((go, {"m_IsActive": False}) for go in children)
     result = {}
     for oid, adjustments in targets:
         original = view.row(oid)
@@ -66,9 +68,9 @@ def ensure_replay_title(source_game, isolated_game):
     source = Path(source_game).resolve()
     game = verify_copy(isolated_game).root
     marker = json.loads((game / MARKER).read_bytes())
-    if source != Path(marker["source"]) or source == game or source in game.parents or game in source.parents:
+    if not _same_directory(marker["source"], source) or source == game or source in game.parents or game in source.parents:
         raise ValueError("回放副本与安装来源不匹配。")
-    bundle = game / TITLE_FILE
+    bundle = title_path(game, marker)
     catalog = game / AA / "catalog.bin"
     before = catalog.read_bytes()
     raw = bundle.read_bytes()
@@ -79,9 +81,10 @@ def ensure_replay_title(source_game, isolated_game):
         try:
             cursor = catalog_crc._record(before, bundle, (crc, size))
         except ValueError:
-            baseline = BASELINE_RECORDS[marker.get("galleryBaseline", "stock")]
+            baseline = marker["originalTitleRecord"]
             cursor = catalog_crc._record(before, bundle, baseline)
-            recovered = before[:cursor] + struct.pack("<II", crc, size) + before[cursor+8:]
+            stored_crc = crc if baseline[0] else 0
+            recovered = before[:cursor] + struct.pack("<II", stored_crc, size) + before[cursor+8:]
             with tempfile.TemporaryDirectory(prefix=".replay-title-record-", dir=catalog.parent) as temp:
                 fresh = Path(temp) / "catalog.bin"
                 fresh.write_bytes(recovered)
@@ -89,8 +92,12 @@ def ensure_replay_title(source_game, isolated_game):
             return {"changed": True, "crc": crc, "size": size, "bundle": bundle.name}
         stored_crc, _ = struct.unpack_from("<II", before, cursor)
         return {"changed": False, "crc": stored_crc, "size": size, "bundle": bundle.name}
-    if hashlib.sha256(raw).hexdigest() not in (STOCK_HASHES[TITLE_FILE], V14_HASHES[TITLE_FILE]):
-        raise ValueError("标题资源并非可验证的原版或已完成的回放副本。")
+    if hashlib.sha256(raw).hexdigest() != marker["sourceTitleSha256"]:
+        raise ValueError("标题资源与准备副本时核实的安装资源不一致。")
+    original_crc = catalog_crc.reader_crc(serialized.reader)
+    cursor = catalog_crc._record(before, bundle, (original_crc, len(raw)))
+    marker["originalTitleRecord"] = struct.unpack_from("<II", before, cursor)
+    atomic_json(game / MARKER, marker, temp_dir=game.parent)
     for oid, row in changes.items():
         serialized.objects[oid].save_typetree(row)
     with tempfile.TemporaryDirectory(prefix=".replay-title-", dir=bundle.parent) as temp:

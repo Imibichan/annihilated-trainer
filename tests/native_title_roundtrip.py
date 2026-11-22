@@ -1,5 +1,6 @@
 """Exercise the title fix on a fresh private game using the local installed game."""
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import catalog_crc
 from title_bindings import Prefab
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from replay.isolation import prepare_copy, STOCK_HASHES, V14_HASHES
+from replay.isolation import MARKER, prepare_copy
 from replay.private_title import ensure_replay_title
 
 
@@ -20,7 +21,8 @@ class TitleRoundtrip(unittest.TestCase):
                                          prefix='native-title-') as tmp:
             game = prepare_copy(source, Path(tmp) / 'private', stock_fallback=fallback).root
             aa = game / 'Annihilated_Data/StreamingAssets/aa'
-            bundle = next((aa/'StandaloneWindows64').glob('naninovelstartupui_assets_all_*'))
+            marker = json.loads((game / MARKER).read_bytes())
+            bundle = game / marker["titleFile"]
             stock = hashlib.sha256(bundle.read_bytes()).hexdigest()
             blob = (aa/'catalog.bin').read_bytes()
             offset = catalog_crc.locate(blob,bundle)
@@ -33,9 +35,9 @@ class TitleRoundtrip(unittest.TestCase):
             root_components = set(view.components(view.root))
             first = ensure_replay_title(source,game)
             self.assertTrue(first['changed'])
-            self.assertIn(stock, list(STOCK_HASHES.values()) + list(V14_HASHES.values()))
-            if fallback:
-                self.assertEqual(stock,'954fd3c769c749584942e681398df9c203ec44b948f0f93efde90fc8af85517e')
+            self.assertEqual(stock, marker["sourceTitleSha256"])
+            if marker["galleryBaseline"] == "installed":
+                self.assertEqual(stock, hashlib.sha256((source / marker["titleFile"]).read_bytes()).hexdigest())
             fixed = UnityPy.load(bundle.read_bytes())
             v = Prefab(fixed,game)
             self.assertEqual(v.root,root_id)
@@ -66,10 +68,10 @@ class TitleRoundtrip(unittest.TestCase):
                   f"Verified {len(unrelated)-len(native_children)-len(root_components)} unrelated "
                   f"objects bytewise. CRC={first['crc']:08x}, size={first['size']}.")
 
-    def test_published_v14_baseline(self):
+    def test_installed_baseline(self):
         self.run_roundtrip(None)
 
-    def test_vanilla_title_baseline(self):
+    def test_current_game_supersedes_stale_fallback(self):
         self.run_roundtrip(Path(r'C:/Users/Administrator/Documents/Codex/2026-11-18/v1-3/.work/scene-fix/fixture-stock-build'))
 
 if __name__=='__main__':

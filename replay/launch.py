@@ -1,6 +1,6 @@
 """Prepare and start the isolated native replay player from the trainer."""
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import ctypes
 import hashlib
 import json
@@ -8,12 +8,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(1, str(HERE.parent))
-from isolation import launch_environment, prepare_copy, verify_copy
+from replay.isolation import (AA, MARKER, _check_path, _overlap, atomic_json, build_folder_name, launch_environment,
+                              local_low, prepare_copy, restore_members, source_stamp, verify_copy)
 
 
 def file_sha(path):
@@ -22,19 +24,86 @@ def file_sha(path):
 
 
 def cache_folder(source):
-    identity = hashlib.sha256(os.path.normcase(str(source.resolve())).encode())
-    build = source / "Annihilated_Data/StreamingAssets/aa/catalog.hash"
-    if build.is_file():
-        identity.update(build.read_bytes())
-    game_id = identity.hexdigest()[:12]
-    return Path(os.environ["LOCALAPPDATA"]) / "OrienWorkshop" / "AnnihilatedReplay" / game_id
+    identity = hashlib.sha256(os.path.normcase(str(source.resolve())).encode()).hexdigest()[:16]
+    return Path(os.environ["LOCALAPPDATA"]) / "OrienWorkshop" / "AnnihilatedReplay" / ("v16-" + identity)
+
+
+def program_inputs(index_file):
+    modules = [p for p in HERE.iterdir() if p.suffix in {".py", ".json"} and not p.name.startswith("test_")]
+    return {p.name: file_sha(p) for p in (*modules, index_file)}
+
+
+def generation(cache, source, index_file):
+    return cache / build_folder_name(source_stamp(source), program_inputs(index_file))
+
+
+def compatibility_report(cache, generation_name, report, *, show):
+    """Write the complete local report. Notify the player once per distinct warning set."""
+    excluded = report.get("excluded", {})
+    presets = [(scene, title, reason) for scene, values in sorted(report.get("excludedPresets", {}).items())
+               for title, reason in sorted(values.items())]
+    unresolved = report.get("unresolvedArtwork", {})
+    preserved = report["migration"]["preserved"]
+    path = _check_path(cache / "replay-compatibility.txt", allow_missing=True)
+    summary = f"当前可播放 {report['scenes']} 段剧情、{report['artworks']} 幅独立画稿。"
+    lines = ["原作剧情回放 V1.6 兼容性报告", summary, "本次副本目录 " + report["gameRoot"]]
+    if excluded:
+        lines.extend(["", "本版游戏中未开放的回放入口"] + [f"{key}　{value}" for key, value in sorted(excluded.items())])
+    if presets:
+        lines.extend(["", "未开放的剧情分支"] + [f"{scene}　{title}　{reason}" for scene, title, reason in presets])
+    if unresolved:
+        lines.extend(["", "旧画面索引中未定位的条目"] + [f"{key}　{value}" for key, value in sorted(unresolved.items())])
+    if preserved:
+        lines.extend(["", "保留在原处的旧回放目录"] + [f"{key}　{value}" for key, value in sorted(preserved)])
+    if report["migration"]["removed"]:
+        lines.extend(["", "已移除旧版游戏副本"] + report["migration"]["removed"])
+    if report["migration"].get("preferencesUnreadable"):
+        lines.extend(["", "未能读取下列回放偏好，原有私人存档仍在原处"] +
+                     [f"{company}　{reason}" for company, reason in report["migration"]["preferencesUnreadable"]])
+    if not excluded and not presets and not preserved:
+        lines.extend(["", "所有回放入口均已通过本次兼容性检查。"])
+    if path.exists() and (not path.is_file() or path.stat().st_nlink != 1):
+        raise ValueError("回放兼容性报告路径不属于此目录。")
+    with tempfile.NamedTemporaryFile(dir=cache, delete=False) as stream:
+        tmp = Path(stream.name)
+        stream.write(("\n".join(lines) + "\n").encode("utf-8-sig"))
+    try:
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    if show and (excluded or presets or preserved):
+        notice = _check_path(cache / ".v16-notice.json", allow_missing=True)
+        signature = hashlib.sha256(json.dumps([generation_name, excluded, presets, sorted(preserved)],
+                                              sort_keys=True).encode()).hexdigest()
+        try:
+            previous = json.loads(notice.read_bytes()) if notice.stat().st_size < 4096 else {}
+        except (FileNotFoundError, ValueError):
+            previous = {}
+        if previous != {"seen": signature}:
+            details = [summary]
+            if excluded:
+                key, reason = next(iter(sorted(excluded.items())))
+                details.append(f"{len(excluded)} 个入口在当前游戏版本下暂时关闭。\n{key}　{reason}")
+            if presets:
+                scene, title, reason = presets[0]
+                details.append(f"{len(presets)} 个剧情分支暂时关闭。\n{scene}　{title}　{reason}")
+            if preserved:
+                details.append(f"{len(preserved)} 个旧目录已保留。\n{preserved[0][0]}　{preserved[0][1]}")
+            details.append(f"完整说明位于\n{path}\n\n点击确定启动回放。")
+            ctypes.windll.user32.MessageBoxW(None, "\n\n".join(details), "原作剧情回放 V1.6", 64)
+            atomic_json(notice, {"seen": signature})
+    return str(path)
 
 
 @contextmanager
 def session_lock(folder):
     import msvcrt
+    folder = _check_path(folder, allow_missing=True)
     folder.mkdir(parents=True, exist_ok=True)
-    with (folder / ".active").open("a+b") as lock:
+    active = _check_path(folder / ".active", allow_missing=True)
+    if active.exists() and (not active.is_file() or active.stat().st_nlink != 1):
+        raise ValueError("回放进程锁不属于此目录。")
+    with active.open("a+b") as lock:
         lock.seek(0,2)
         if lock.tell() == 0:
             lock.write(b"0")
@@ -43,7 +112,7 @@ def session_lock(folder):
         try:
             msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as error:
-            raise RuntimeError("回放窗口已开启，或另一份修改器正在准备回放。") from error
+            raise RuntimeError("请先关闭已开启的 V1.5 或 V1.6 回放窗口，并等待其他修改器完成准备。") from error
         try:
             yield
         finally:
@@ -52,42 +121,40 @@ def session_lock(folder):
 
 
 def prepare(source, destination, index_file, fallback=None):
-    from program import make_program
-    from replay.private_title import ensure_replay_title, TITLE_FILE
-    from scenes import build_catalog
-    from dungeon_scenes import add_dungeon_helpers, build_dungeon_scenes
+    from addressables import address_paths
+    from program import compile_replays
+    from replay.migration import clean_interrupted_work
+    from replay.private_title import ensure_replay_title, title_path
     from script_assets import AA, PLATFORM, _bundle, patch_scripts, read_script_rows
-    game = prepare_copy(source, destination, stock_fallback=fallback)
+    inputs = program_inputs(index_file)
     original = _bundle(source)
-    modules = [p for p in HERE.glob("*.py") if not p.name.startswith("test_")]
-    stamp = {p.name: file_sha(p) for p in (*modules, index_file, original)}
-    receipt = game.root / ".v15-program.json"
+    game = prepare_copy(source, destination, stock_fallback=fallback, program_inputs=inputs,
+                        script_file=original.relative_to(source).as_posix())
+    stamp = {**inputs, original.name: file_sha(original)}
+    receipt = game.root / ".v16-program.json"
+    marker = json.loads((game.root / MARKER).read_bytes())
+    title = title_path(game.root, marker)
     catalog_path = game.root / AA / "catalog.bin"
     installed = game.root / AA / PLATFORM / original.name
+    clean_interrupted_work(game.root, [title.name, original.name])
     try:
         prior = json.loads(receipt.read_text(encoding="utf-8"))
     except (FileNotFoundError, UnicodeError, ValueError):
         prior = {}
     if (isinstance(prior,dict) and prior.get("inputs") == stamp and installed.is_file() and
             prior.get("bundleSha") == file_sha(installed) and prior.get("catalogSha") == file_sha(catalog_path)
-            and prior.get("titleSha") == file_sha(game.root / TITLE_FILE)):
+            and prior.get("titleSha") == file_sha(title)):
         return game, prior
+    restore_members(source, game, marker, [marker["titleFile"], marker["scriptFile"], (AA / "catalog.bin").as_posix()], fallback)
     ensure_replay_title(source, game.root)
     gallery = json.loads(index_file.read_text(encoding="utf-8"))
     scripts = read_script_rows(source)
-    catalog = build_catalog(scripts, gallery)
-    scenes = catalog["scenes"] + build_dungeon_scenes(scripts, gallery)
-    edits = make_program(scripts, scenes, catalog["artworks"], gallery["assets"])
-    add_dungeon_helpers(edits, scripts)
+    edits, coverage = compile_replays(scripts, gallery,
+                                     artwork_addresses=address_paths((source / AA / "catalog.bin").read_bytes()))
     outcome = patch_scripts(source, game.root, edits)
     report = {"inputs":stamp, "packed":outcome, "bundleSha":file_sha(installed),
-              "catalogSha":file_sha(catalog_path), "titleSha":file_sha(game.root / TITLE_FILE),
-              "scenes":2+sum(s["status"] in ("script-reviewed","live-verified") for s in scenes),
-              "candidates":sum(s["status"] == "candidate" for s in scenes),
-              "artworks":len(catalog["artworks"])}
-    tmp = receipt.with_suffix(".tmp")
-    tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
-    os.replace(tmp, receipt)
+              "catalogSha":file_sha(catalog_path), "titleSha":file_sha(title), **coverage}
+    atomic_json(receipt, report, temp_dir=game.root.parent)
     return verify_copy(destination), report
 
 
@@ -100,17 +167,33 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--windowed", action="store_true")
     args = parser.parse_args()
-    source = args.game.resolve()
-    cache = (args.cache or cache_folder(source)).resolve()
-    if cache == source or cache.is_relative_to(source) or source.is_relative_to(cache):
+    from replay.migration import check_running_games, legacy_folders, retire_old_games
+    source = _check_path(args.game)
+    cache = _check_path(args.cache or cache_folder(source), allow_missing=True)
+    if _overlap(cache, source) or _overlap(cache, local_low()):
         raise ValueError("回放数据目录必须独立于原版游戏。")
-    with session_lock(cache):
-        game, report = prepare(source, cache/"game", args.index, args.stock_fallback)
+    with ExitStack() as locks:
+        locks.enter_context(session_lock(cache))
+        # An explicit scratch cache confines legacy discovery to that tree.
+        legacy = legacy_folders(source, cache if args.cache else cache.parent)
+        for folder in legacy:
+            locks.enter_context(session_lock(folder))
+        check_running_games(cache, legacy)
+        current = generation(cache, source, args.index)
+        game, report = prepare(source, current/"game", args.index, args.stock_fallback)
+        if generation(cache, source, args.index) != current:
+            raise ValueError("准备期间游戏文件发生变化，请重试。")
+        migration = retire_old_games(source, cache, game, legacy)
+        report = {**report, "gameRoot": str(game.root), "profile": str(game.profile), "migration": migration}
+        report["compatibilityReport"] = compatibility_report(cache, current.name, report, show=not args.prepare_only)
         if args.prepare_only:
             if sys.stdout:
                 print(json.dumps(report, ensure_ascii=True))
             return 0
-        command = [str(game.executable), "-logFile", str(cache/"replay-player.log")]
+        log = _check_path(cache / "replay-player.log", allow_missing=True)
+        if log.exists() and (not log.is_file() or log.stat().st_nlink != 1):
+            raise ValueError("回放日志不属于此目录。")
+        command = [str(game.executable), "-logFile", str(log)]
         if args.windowed:
             command += ["-screen-fullscreen","0","-screen-width","960","-screen-height","540"]
         result = subprocess.run(command, cwd=game.root, env=launch_environment(), check=False)
@@ -125,5 +208,5 @@ if __name__ == "__main__":
     except Exception as error:
         if sys.stderr:
             raise
-        ctypes.windll.user32.MessageBoxW(None, str(error), "原作剧情回放 V1.5", 16)
+        ctypes.windll.user32.MessageBoxW(None, str(error), "原作剧情回放 V1.6", 16)
         sys.exit(1)

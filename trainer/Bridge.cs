@@ -60,6 +60,17 @@ public sealed class Character {
  public int[] Stats{get{return new[]{Str,Dex,Agi,Mag};}}
 }
 public sealed class StateChangedException : Exception {public StateChangedException():base("人物、等级或存档数据正在变化，已停止本次操作；请稳定后重新读取并应用。部分写入可能已完成。"){} }
+sealed class GameReadbackException : InvalidOperationException {
+ public readonly int Actual;
+ public GameReadbackException(string key,int actual):base("游戏未接受 "+key+" 的新数值，读回 "+actual+"。"){Actual=actual;}
+}
+sealed class SanityReadbackException : InvalidOperationException {
+ public readonly string Id,CharacterKey;public readonly int Actual;
+ public SanityReadbackException(string id,string character,int requested,int actual)
+  :base(RoleRules.Label(character)+" 的 SAN 输入为 "+requested+"，游戏实际保留 "+actual+"。"){
+  Id=id;CharacterKey=character;Actual=actual;
+ }
+}
 public sealed class Bridge : IDisposable {
  public readonly Remote Remote;readonly Dispatcher ui;readonly long engine,managerClass,servicesField,getValue,setValue;readonly int mapOffset;
  readonly Dictionary<string,long> strings=new Dictionary<string,long>();readonly long scratch;bool disposed,runtimeValidated;
@@ -67,6 +78,7 @@ public sealed class Bridge : IDisposable {
  // ReadTeam must succeed after ABI and service-schema validation before opening writes.
  public bool CanBasicWrites {get{return !disposed&&runtimeValidated&&Remote!=null&&Remote.StaticEnvelopeValidated&&!Remote.Faulted;}}
  public bool CanGrowth {get{return CanBasicWrites;}}
+ public decimal? CurrencyBalance {get;private set;}
  public string CompatibilitySummary {get{return Remote.VerifiedBuild?"已识别经典版本，连接成功。":Remote.CurrentAnalyzedBuild?"已识别当前版本，连接成功。":Remote.KnownContent?"已识别游戏资源，已使用通用模式连接。":"新资源版本，已使用通用模式连接。";}}
  public int Pid {get{return Remote.Process.Id;}} public bool Alive{get{return !disposed&&Remote.Alive;}}
  public Bridge(){
@@ -93,7 +105,7 @@ public sealed class Bridge : IDisposable {
   Remote.Write(scratch+16,BitConverter.GetBytes(ui.Target(Key(key))));Remote.Write(scratch+48,new byte[8]);
   long result=ui.Api("runtime_invoke",getValue,service,scratch+16,scratch+48);CheckException();return Remote.MString(result);
  }
- void CheckException(){long ex=Remote.Ptr(scratch+48);if(ex!=0)throw new Exception("游戏变量接口拒绝本次操作；异常类型："+Remote.CString(ui.Api("class_get_name",Remote.Ptr(ex))));}
+ void CheckException(){long ex=Remote.Ptr(scratch+48);if(ex!=0)throw new GameVariableException("游戏变量接口拒绝本次操作；异常类型："+Remote.CString(ui.Api("class_get_name",Remote.Ptr(ex))));}
  int Number(long svc,string key){int n;if(!int.TryParse(Get(svc,key),NumberStyles.Integer,CultureInfo.InvariantCulture,out n))throw new Exception("变量 "+key+" 不是整数，暂不能修改。");return n;}
  int OptionalNumber(long svc,string key){string value=Get(svc,key);if(String.IsNullOrEmpty(value))return 0;int n;if(!int.TryParse(value,NumberStyles.Integer,CultureInfo.InvariantCulture,out n))throw new Exception("额外加成／成长数据异常："+key);return n;}
  bool Flag(long svc,string key){string value=Get(svc,key);return value=="1"||String.Equals(value,"true",StringComparison.OrdinalIgnoreCase);}
@@ -101,17 +113,29 @@ public sealed class Bridge : IDisposable {
   if(!CanBasicWrites)throw new Exception("连接状态已变化，请重新连接后操作。");
   if(!Allowed(key))throw new Exception("不允许修改该变量。");long val=ui.RootString(value.ToString(CultureInfo.InvariantCulture));try{
    var args=new byte[16];Array.Copy(BitConverter.GetBytes(ui.Target(Key(key))),0,args,0,8);Array.Copy(BitConverter.GetBytes(ui.Target(val)),0,args,8,8);Remote.Write(scratch+16,args);Remote.Write(scratch+48,new byte[8]);
-   ui.Api("runtime_invoke",setValue,svc,scratch+16,scratch+48);CheckException();if(Number(svc,key)!=value)throw new Exception("游戏未接受 "+key+" 的新数值。");
+   ui.Api("runtime_invoke",setValue,svc,scratch+16,scratch+48);CheckException();int actual=Number(svc,key);if(actual!=value)throw new GameReadbackException(key,actual);
   }finally{ui.Unroot(val);}
  }
  static bool IsBonus(string s){foreach(string c in GrowthRules.Characters)foreach(string k in GrowthRules.Stats)if(s==GrowthRules.BonusKey(c,k))return true;return false;}
- static bool Allowed(string s){if(IsBonus(s))return true;foreach(string p in new[]{"player","partner"})foreach(string k in new[]{"Str","Dex","Agi","Mag","Health","Sanity"})if(s==p+k)return true;return false;}
+ static bool Allowed(string s){if(s==CurseCurrency.Key||IsBonus(s))return true;foreach(string p in new[]{"player","partner"})foreach(string k in new[]{"Str","Dex","Agi","Mag","Health","Sanity"})if(s==p+k)return true;return false;}
  public Character[] ReadTeam(){long svc=Service();var result=new List<Character>();var growth=new int[4];for(int i=0;i<4;i++)growth[i]=OptionalNumber(svc,"player"+GrowthRules.Stats[i]+"Add");bool trueHero=Flag(svc,"xSwitchHeroTrue"),poweredMage=Flag(svc,"xSwitchMageChoiceGetMaryoku");string target=Get(svc,"battleTarget");foreach(string id in new[]{"player","partner"}){
   string name=Get(svc,id+"Name");int max=Number(svc,id+"MaxHealth");if(max<=0){if(id=="player")throw new Exception("请先进入存档，等待角色数据加载。");continue;}
   if(max>100000000)throw new Exception("生命上限超出可识别范围。");
   string character=Get(svc,id+"Character");if(String.IsNullOrEmpty(character))throw new Exception("请先进入存档，等待人物数据加载。");int level=Number(svc,id+"Lv");var bonuses=new int[4];for(int i=0;i<4;i++)bonuses[i]=OptionalNumber(svc,GrowthRules.BonusKey(character,GrowthRules.Stats[i]));
   result.Add(new Character{Id=id,Name=String.IsNullOrEmpty(name)?id:name,CharacterKey=character,Level=level,GrowthAdds=id=="player"?(int[])growth.Clone():new int[4],TrueHero=trueHero,PoweredMage=poweredMage,BattleTarget=target,NormalStats=GrowthRules.Compute(character,level,id=="player"?growth:new int[4],trueHero,poweredMage,target),Bonuses=bonuses,Str=Number(svc,id+"Str"),Dex=Number(svc,id+"Dex"),Agi=Number(svc,id+"Agi"),Mag=Number(svc,id+"Mag"),Health=Number(svc,id+"Health"),Sanity=Number(svc,id+"Sanity"),MaxHealth=max});
- }return result.ToArray();}
+ }CurrencyBalance=CurseCurrency.Read(key=>Get(svc,key));return result.ToArray();}
+ public decimal ApplyCurrency(decimal expected,int desired){
+  if(!CanBasicWrites)throw new InvalidOperationException("连接状态已变化，请重新连接后调整诅咒余额。");
+  long svc=Service();
+  try{
+   decimal confirmed=CurseCurrency.Apply(key=>Get(svc,key),(key,value)=>Set(svc,key,value),expected,desired);
+   CurrencyBalance=confirmed;return confirmed;
+  }catch(Exception ex){
+   if(!CanBasicWrites||!Alive)throw;
+   CurrencyBalance=CurseCurrency.Read(key=>Get(svc,key));
+   throw new CurrencyOperationException(ex);
+  }
+ }
  bool FormulaMatches(long svc,Character c){if(Get(svc,c.Id+"Character")!=c.CharacterKey||Number(svc,c.Id+"Lv")!=c.Level)return false;if(c.Id=="player")for(int i=0;i<4;i++)if(OptionalNumber(svc,"player"+GrowthRules.Stats[i]+"Add")!=c.GrowthAdds[i])return false;if(c.CharacterKey=="hero"&&Flag(svc,"xSwitchHeroTrue")!=c.TrueHero)return false;if(c.CharacterKey=="mage"&&(Flag(svc,"xSwitchMageChoiceGetMaryoku")!=c.PoweredMage||(c.PoweredMage&&Get(svc,"battleTarget")!=c.BattleTarget)))return false;return true;}
  public void Apply(string id,string expectedCharacter,int str,int dex,int agi,int mag){
   if(!CanGrowth)throw new Exception("连接状态已变化，请重新连接后应用四维。");
@@ -132,9 +156,15 @@ public sealed class Bridge : IDisposable {
   var team=ReadTeam();Character c=null;foreach(var item in team)if(item.Id==id)c=item;
   if(c==null||c.CharacterKey!=expectedCharacter)throw new StateChangedException();
   if(!RuntimeRules.Sanity(c.Id,c.CharacterKey,c.Sanity))throw new Exception("当前角色或 SAN 数据未通过验证；未写入。");
-  long svc=Service();
-  WriteChanges(new List<KeyValuePair<string,int>>{new KeyValuePair<string,int>(id+"Sanity",value)},()=>FormulaMatches(svc,c)&&Number(svc,c.Id+"Sanity")==c.Sanity);
-  return ReadTeam();
+  long svc=Service();string key=id+"Sanity";
+  if(!FormulaMatches(svc,c)||Number(svc,key)!=c.Sanity)throw new StateChangedException();
+  try{if(c.Sanity!=value)Set(svc,key,value);}
+  catch(GameReadbackException ex){throw new SanityReadbackException(id,c.CharacterKey,value,ex.Actual);}
+  var confirmed=ReadTeam();
+  var member=Array.Find(confirmed,item=>item.Id==id);
+  if(member==null||member.CharacterKey!=expectedCharacter)throw new StateChangedException();
+  if(member.Sanity!=value)throw new SanityReadbackException(id,member.CharacterKey,value,member.Sanity);
+  return confirmed;
  }
  public Character[] RestoreNormal(){if(!CanGrowth)throw new Exception("连接状态已变化，请重新连接后还原四维。");var team=ReadTeam();var changes=new List<KeyValuePair<string,int>>();foreach(string c in GrowthRules.Characters)foreach(string stat in GrowthRules.Stats)changes.Add(new KeyValuePair<string,int>(GrowthRules.BonusKey(c,stat),0));foreach(var c in team)for(int i=0;i<4;i++){if(!Rules.ValidStat(c.NormalStats[i]))throw new Exception("当前等级的正常属性超出工具支持范围，未还原。");changes.Add(new KeyValuePair<string,int>(c.Id+GrowthRules.Stats[i],c.NormalStats[i]));}long svc=Service();WriteChanges(changes,()=>{foreach(var c in team)if(!FormulaMatches(svc,c))return false;return true;});return ReadTeam();}
  public GrowthUpdate MaintainGrowth(){var team=ReadTeam();if(!CanGrowth)return new GrowthUpdate{Changed=false,Team=team};bool changed=false;long svc=0;foreach(var c in team)for(int i=0;i<4;i++){

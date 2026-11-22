@@ -17,7 +17,9 @@ class PriestRoutes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.scripts = json.loads(Path(os.environ['V15_SCRIPTS']).read_text('utf-8'))
-        cls.gallery = json.loads(Path(os.environ['V14_GALLERY']).read_text('utf-8'))['scenes']
+        from source_anchors import resolve_gallery
+        gallery = json.loads(Path(os.environ['V14_GALLERY']).read_text('utf-8'))
+        cls.gallery, _ = resolve_gallery(cls.scripts, gallery)
         cls.flow = scenes.ScriptMap(cls.scripts)
         cls.entries = []
         priest_replay.integrate(cls.entries, cls.flow, cls.gallery)

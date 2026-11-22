@@ -35,7 +35,7 @@ namespace Trainer
             var python = Path.Combine(root, "gallery", "runtime", "pythonw.exe");
             var script = Path.Combine(root, "gallery", "code", "replay", "launch.py");
             if (!File.Exists(python) || !File.Exists(script))
-                throw new FileNotFoundException("未找到回放程序。请将整个 V1.5 压缩包解压到同一文件夹。");
+                throw new FileNotFoundException("未找到回放程序。请将整个 V1.6 压缩包解压到同一文件夹。");
             return new ProcessStartInfo(python, "-X utf8 -B " + QuotePath(script) + " --game " + QuotePath(directory))
             {
                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root,
@@ -61,7 +61,7 @@ namespace Trainer
             var python = Path.Combine(root, "gallery", "runtime", "python.exe");
             var script = Path.Combine(root, "gallery", "code", "legacy_gallery.py");
             if (!File.Exists(python) || !File.Exists(script))
-                throw new FileNotFoundException("缺少旧画廊迁移组件。请完整解压 V1.5 发布包。");
+                throw new FileNotFoundException("缺少旧画廊迁移组件。请完整解压 V1.6 发布包。");
 
             // Windows doubles the trailing backslashes of a quoted argument before its closing quote.
             var start = new ProcessStartInfo(python, "-X utf8 -B " + QuotePath(script) +

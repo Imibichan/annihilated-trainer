@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -58,7 +59,7 @@ class IsolationTests(unittest.TestCase):
     def test_source_and_real_progress_untouched_including_after_reuse(self):
         saved = self.write(self.saves, "DeathKumiai/Annihilated/NaninovelData/Saves/GlobalSave.nson", b"progress")
         copy = iso.prepare_copy(self.source, self.target)
-        self.assertRegex(copy.company, r"^Or15[0-9a-f]{7}$")
+        self.assertRegex(copy.company, r"^Or16[0-9a-f]{7}$")
         self.assertEqual(copy.profile, self.saves / copy.company / "Annihilated")
         self.assertFalse(copy.profile.exists())
         self.assertEqual((copy.root / iso.VENDOR).read_bytes(), b"Steam")
@@ -70,7 +71,7 @@ class IsolationTests(unittest.TestCase):
         story = copy.root / "Annihilated_Data/StreamingAssets/story.bundle"
         story.write_bytes(b"replay")
         self.assertEqual(iso.prepare_copy(self.source, self.target), copy)
-        self.assertEqual(story.read_bytes(), b"replay")
+        self.assertEqual(story.read_bytes(), self.files["Annihilated_Data/StreamingAssets/story.bundle"])
         self.assertEqual(saved.read_bytes(), b"progress")
         for name, data in self.files.items():
             self.assertEqual((self.source / name).read_bytes(), data, name)
@@ -107,6 +108,29 @@ class IsolationTests(unittest.TestCase):
         self.write(self.base / "fallback", name, self.stock[name])
         copy = iso.prepare_copy(self.source, self.target, stock_fallback=self.base / "fallback")
         self.assertEqual((copy.root / name).read_bytes(), self.stock[name])
+
+    def test_new_registered_title_and_catalog_take_precedence_over_previous_game_backup(self):
+        old_title = next(name for name in self.stock if name.endswith(".bundle"))
+        (self.source / old_title).unlink()
+        name = "naninovelstartupui_assets_all_update-1.bundle"
+        new_title = iso.AA + "StandaloneWindows64/" + name
+        self.write(self.source, new_title, b"new UI")
+        self.write(self.source, iso.AA + "catalog.bin", b"latest catalog")
+        state = self.source / iso.STATE
+        rows = [{"path":key, "original":digest(data), "patched":digest(b"historical patch")}
+                for key, data in self.stock.items()]
+        self.write(state, "manifest.json", json.dumps({"schema":1,"files":rows}).encode())
+        for i, data in enumerate(self.stock.values()):
+            self.write(state, f"original-{i}.bin", data)
+        dependencies = {"addressables":SimpleNamespace(bundle_locations=lambda binary:[name]),
+                        "catalog_crc":SimpleNamespace(locate=lambda binary,title: 4)}
+        with patch.dict("sys.modules", dependencies):
+            game = iso.prepare_copy(self.source, self.target)
+        marker = json.loads((game.root / iso.MARKER).read_bytes())
+        self.assertEqual(marker["titleFile"], new_title)
+        self.assertEqual(marker["galleryBaseline"], "installed")
+        self.assertEqual((game.root / iso.AA / "catalog.bin").read_bytes(), b"latest catalog")
+        self.assertFalse((game.root / old_title).exists())
 
     def test_aborts_on_ambiguous_company_configuration(self):
         self.write(self.source, iso.MANAGERS, b"DeathKumiai repeated DeathKumiai")

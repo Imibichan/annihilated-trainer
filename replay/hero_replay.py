@@ -126,19 +126,21 @@ def _final_blow(flow, gallery, fourth_phase):
 
 
 def _elite_aftermaths(flow, gallery):
-    source, label = 'Scenario_Hero3', 'Dropout3_EliteAfter'
-    _require(flow.sources[source], '@gosub Scenario.SeaDragonBattleCore',
-             '@goto .HeroBookSympathyEnd if:xSwitchOutcastChoiceCantTrustHero==1&&xSwitchChoiceVillainessLastKaibutsu==1')
-    presets = [_preset(flow, gallery, source, label, title,
-                       {'xSwitchOutcastChoiceCantTrustHero': value, 'xSwitchChoiceVillainessLastKaibutsu': value}, 3, 3)
-               for title, value in [('理解勇者的心情', 0), ('仍对勇者心存疑虑', 1)]]
-    yield _scene(flow, source, label, 3, '海龙战后 · 寻回的书', presets,
-                 '海龙精英战后的原作连续回调，两种过去选择保留主人公是否理解勇者的差异。')
-    source, label = 'Scenario_Hero4', 'Slime3_EliteAfter'
-    _require(flow.sources[source], '@gosub Scenario.GiantBattleCore', '@return if:xSwitchHeroDropoutChoiceNotBelieve==1')
-    preset = _preset(flow, gallery, source, label, '相信勇者', {'xSwitchHeroDropoutChoiceNotBelieve': 0}, 4, 3)
-    yield _scene(flow, source, label, 4, '巨人战后 · 两人的约定', [preset],
-                 '原作巨人战后，相信勇者的路线继续至两人约定，另一条路线立即返回。')
+    with flow.review('Scenario_Hero3.Dropout3_EliteAfter'):
+        source, label = 'Scenario_Hero3', 'Dropout3_EliteAfter'
+        _require(flow.sources[source], '@gosub Scenario.SeaDragonBattleCore',
+                 '@goto .HeroBookSympathyEnd if:xSwitchOutcastChoiceCantTrustHero==1&&xSwitchChoiceVillainessLastKaibutsu==1')
+        presets = [_preset(flow, gallery, source, label, title,
+                           {'xSwitchOutcastChoiceCantTrustHero': value, 'xSwitchChoiceVillainessLastKaibutsu': value}, 3, 3)
+                   for title, value in [('理解勇者的心情', 0), ('仍对勇者心存疑虑', 1)]]
+        yield _scene(flow, source, label, 3, '海龙战后 · 寻回的书', presets,
+                     '海龙精英战后的原作连续回调，两种过去选择保留主人公是否理解勇者的差异。')
+    with flow.review('Scenario_Hero4.Slime3_EliteAfter'):
+        source, label = 'Scenario_Hero4', 'Slime3_EliteAfter'
+        _require(flow.sources[source], '@gosub Scenario.GiantBattleCore', '@return if:xSwitchHeroDropoutChoiceNotBelieve==1')
+        preset = _preset(flow, gallery, source, label, '相信勇者', {'xSwitchHeroDropoutChoiceNotBelieve': 0}, 4, 3)
+        yield _scene(flow, source, label, 4, '巨人战后 · 两人的约定', [preset],
+                     '原作巨人战后，相信勇者的路线继续至两人约定，另一条路线立即返回。')
 
 
 def _final_phases(flow, gallery):
@@ -179,21 +181,22 @@ def _final_phases(flow, gallery):
                 '@gosub .PriestFinalHeroFinisherIntro if:battleTarget=="priest"&&xPriestFinalRoute=="hero"&&xSwitchPriestFinalHeroFinalBreakDone==1&&heroLinkLightningPhase==30',
                 '@set heroLinkLightningPhase=31', '@goto .PriestFinalHeroLinkLightningChoice'])
             note = '以普通攻击触发第四形态濒死时的原作诅咒获取、僧侣蓄力与决战序幕，到联手出牌前返回。'
-        scene = _battle_action(flow, gallery, f'Battle.Action.HeroPriestPhase{phase}', 'Hero', 5,
-                               title, setup, commands, (), proof, note)
-        scene['actionAtFirstCommand']['selectBoss'] = True
-        if relic:
-            # First gives an iron sword and potion. Register this relic first so the
-            # stock boss setup sees it in inventory and supplies just the other two.
-            preset = scene['presets'][0]
-            preset['title'] = f'未使用{relic_title}'
-            used_setup = setup + [f'@set addItem="{relic}"', '@gosub Func.AddItem',
-                                  '@set v15HeroRelicSlot=itemAddedIndex']
-            used_action = dict(scene['actionAtFirstCommand'],
-                               commands=['@set z=RecordBattleUsedItem(v15HeroRelicSlot)'] + commands)
-            scene['presets'].append(dict(preset, title=f'已使用{relic_title}', setupCommands=used_setup,
-                                         actionAtFirstCommand=used_action))
-        yield scene
+        with flow.review(f'Battle.Action.HeroPriestPhase{phase}' if phase < 4 else 'Scenario_Hero5.PriestBattleAfter'):
+            scene = _battle_action(flow, gallery, f'Battle.Action.HeroPriestPhase{phase}', 'Hero', 5,
+                                   title, setup, commands, (), proof, note)
+            scene['actionAtFirstCommand']['selectBoss'] = True
+            if relic:
+                # First gives an iron sword and potion. Register this relic first so the
+                # stock boss setup sees it in inventory and supplies just the other two.
+                preset = scene['presets'][0]
+                preset['title'] = f'未使用{relic_title}'
+                used_setup = setup + [f'@set addItem="{relic}"', '@gosub Func.AddItem',
+                                      '@set v15HeroRelicSlot=itemAddedIndex']
+                used_action = dict(scene['actionAtFirstCommand'],
+                                   commands=['@set z=RecordBattleUsedItem(v15HeroRelicSlot)'] + commands)
+                scene['presets'].append(dict(preset, title=f'已使用{relic_title}', setupCommands=used_setup,
+                                             actionAtFirstCommand=used_action))
+            yield scene
 
 
 def _final_defeat(flow):
@@ -227,11 +230,20 @@ def _final_defeat(flow):
 def integrate(catalog_scenes, flow, gallery_rows):
     """Replace verified Hero candidates in place; insert recovered aftermaths in story order."""
     phases = list(_final_phases(flow, gallery_rows))
-    finale = _final_blow(flow, gallery_rows, phases.pop())
-    updates = [_arrow(flow, gallery_rows), _final_argument(flow, gallery_rows), finale]
+    updates = []
+    with flow.review('Scenario_Hero1.Outcast1'):
+        updates.append(_arrow(flow, gallery_rows))
+    with flow.review('Scenario_Hero5.PriestBattleBefore'):
+        updates.append(_final_argument(flow, gallery_rows))
+    final_phase = next((s for s in phases if s['id'] == 'Battle.Action.HeroPriestPhase4'), None)
+    if final_phase:
+        phases.remove(final_phase)
+        with flow.review('Scenario_Hero5.PriestBattleAfter'):
+            updates.append(_final_blow(flow, gallery_rows, final_phase))
     updates.extend(_elite_aftermaths(flow, gallery_rows))
     updates.extend(phases)
-    updates.append(_final_defeat(flow))
+    with flow.review('GameOver.HeroFinalNeverGiveUp'):
+        updates.append(_final_defeat(flow))
     insertion_points = {'Scenario_Hero3.Dropout3_EliteAfter': 'Scenario_Hero3.DropoutBattleBefore',
                         'Scenario_Hero4.Slime3_EliteAfter': 'Scenario_Hero4.SlimeBattleBefore'}
     for scene in updates:
@@ -240,7 +252,7 @@ def integrate(catalog_scenes, flow, gallery_rows):
             catalog_scenes[ids.index(scene['id'])] = scene
         else:
             target = insertion_points.get(scene['id'], 'Scenario_Hero5.PriestBattleAfter')
-            catalog_scenes.insert(ids.index(target), scene)
+            catalog_scenes.insert(ids.index(target) if target in ids else len(ids), scene)
 
 
 def patch_program(edits, scripts):
