@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,29 @@ class ReplayMigrationTests(unittest.TestCase):
     def run_upgrade(self, game):
         folders = migration.legacy_folders(self.source, self.cache)
         return migration.retire_old_games(self.source, self.cache, game, folders)
+
+    @unittest.skipUnless(os.name == "nt", "Win32 long-path copy")
+    def test_launcher_prepares_and_reuses_long_bundle_with_normal_public_paths(self):
+        relative = iso.AA + "StandaloneWindows64/" + "long-asset-" * 12 + ".bundle"
+        self.write(iso.io_path(self.source) / relative, b"long file")
+        cache = self.cache / ("nested-" * 10)
+        def prepare(source, destination, index, fallback):
+            self.assertEqual(source, iso.io_path(self.source))
+            self.assertEqual(destination, iso.io_path(destination))
+            game = iso.prepare_copy(source, destination, program_inputs=launch.program_inputs(index))
+            return game, {"scenes": 1, "artworks": 0}
+
+        args = ["launch", "--game", str(self.source), "--cache", str(cache), "--index", str(self.index), "--prepare-only"]
+        with patch.object(sys, "argv", args), patch.object(launch, "prepare", prepare), \
+                patch("replay.language._official_i2_locale", return_value=None):
+            for _ in range(2):
+                with patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(launch.main(), 0)
+                root = Path(json.loads(output.getvalue())["gameRoot"])
+                self.assertTrue(root.is_relative_to(cache))
+                self.assertGreaterEqual(len(str(root / relative)), 260)
+                self.assertEqual((iso.io_path(root) / relative).read_bytes(), b"long file")
+            self.assertEqual(len(list(cache.glob("build-*/game"))), 1)
 
     def test_font_receipt_must_match_before_retiring_the_previous_game(self):
         _, old, _ = self.legacy()
@@ -295,7 +319,7 @@ class ReplayMigrationTests(unittest.TestCase):
             self.fresh()
         generation_root = generation(self.cache, self.source, self.index)
         self.assertFalse((generation_root / "game").exists())
-        extra = self.write(generation_root / ".game.building/foreign.txt", b"keep")
+        extra = self.write(generation_root / iso.STAGING / "foreign.txt", b"keep")
         with self.assertRaises(ValueError):
             self.fresh()
         self.assertEqual(extra.read_bytes(), b"keep")

@@ -1,4 +1,4 @@
-"""Build a V1.6.1 stage or checked release from a player-independent V1.4 toolkit."""
+"""Build a V1.6.2 stage or checked release from a player-independent V1.4 toolkit."""
 import argparse
 from pathlib import Path
 import shutil
@@ -12,7 +12,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-TRAINER = "勇者小队全灭了修改器-v1.6.1.exe"
+TRAINER = "勇者小队全灭了修改器-v1.6.2.exe"
 SOURCE = "源码"
 DOC_NAMES = {"使用说明.txt", "更新说明.txt", "验证记录.txt", "使用说明.md", "更新说明.md", "验证记录.md"}
 
@@ -138,7 +138,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", type=Path, required=True, help="original V1.4 toolkit release folder")
     parser.add_argument("--stage", type=Path, help="optional empty staging folder to retain")
-    parser.add_argument("--docs", type=Path, help="directory containing V1.6.1 使用说明 / 验证记录 / 更新说明")
+    parser.add_argument("--docs", type=Path, help="directory containing V1.6.2 使用说明 / 验证记录 / 更新说明")
     parser.add_argument("--archive", type=Path, help="write verified release ZIP")
     parser.add_argument("--source-archive", type=Path, help="also write a source-only ZIP")
     args = parser.parse_args()

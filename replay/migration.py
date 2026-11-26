@@ -50,7 +50,7 @@ def _record(path):
 
 
 def _legacy_id(source, game):
-    identity = hashlib.sha256(os.path.normcase(str(source.resolve())).encode())
+    identity = hashlib.sha256(os.path.normcase(str(iso.display_path(source.resolve()))).encode())
     path = game / (iso.AA + "catalog.hash")
     if path.exists():
         identity.update(_read(path, 1024))
@@ -60,7 +60,8 @@ def _legacy_id(source, game):
 def _candidates(folder):
     yield folder / "game"
     if not OLD_ID.fullmatch(folder.name):
-        yield folder / ".game.building"
+        for name in iso.STAGING_NAMES:
+            yield folder / name
     else:
         for entry in folder.glob(".orien-prepare-*"):
             if re.fullmatch(r"\.orien-prepare-[a-zA-Z0-9_-]{6,24}", entry.name):
@@ -175,7 +176,7 @@ def _owner(source, folder, game):
     if marker:
         if not iso._same_directory(marker.get("source"), source) or marker.get("schema") != (1 if legacy else 2):
             raise ValueError("副本来源不同。")
-        if game.name in {".game.building", "payload"}:
+        if game.name in (*iso.STAGING_NAMES, "payload"):
             intended = Path(marker.get("root", ""))
             if intended.name != "game" or not iso._same_directory(str(intended.parent), folder):
                 raise ValueError("未完成的回放副本路径无效。")
@@ -187,7 +188,7 @@ def _owner(source, folder, game):
                 or marker["sourceBuild"]["fileNames"] != iso.file_names_hash(marker.get("copiedFiles", []))):
             raise ValueError("副本来源清单与已生成的回放版本不符。")
     prefix = "Or15" if legacy else "Or16"
-    if game.name == ".game.building":
+    if game.name in iso.STAGING_NAMES:
         company = marker["company"]
     elif marker and (not (game / iso.APP_INFO).is_file() or not (game / iso.MANAGERS).is_file()):
         company = marker["company"]
@@ -315,7 +316,7 @@ def _snapshot(source, source_names, game, legacy):
     names = []
     if catalog.is_file():
         from addressables import bundle_locations
-        if not legacy and game.name == ".game.building":
+        if not legacy and game.name in iso.STAGING_NAMES:
             names = [Path(n).name for n in recorded if n.endswith(".bundle")]
         else:
             names = bundle_locations(_read(catalog, LIMIT))
@@ -349,7 +350,7 @@ def _snapshot(source, source_names, game, legacy):
             files[rel] = _file_id(path)
             if legacy and rel not in temporary_members:
                 _legacy_member(source, rel, path, registered, groups)
-            elif game.name != ".game.building" and rel in digests and rel not in mutable:
+            elif game.name not in iso.STAGING_NAMES and rel in digests and rel not in mutable:
                 if iso._file_hash(path) != digests[rel]:
                     raise ValueError("旧回放中包含已修改的文件：" + rel)
     return files, directories
@@ -416,7 +417,7 @@ def _finish(source, cache, folder, plan):
             or not iso._same_directory(plan.get("folder"), folder)):
         raise ValueError("清理记录与本次安装不一致。")
     rel = plan["target"]
-    if rel not in {"game", ".game.building"} and not re.fullmatch(r"\.orien-prepare-[\w-]{6,24}/payload", rel):
+    if rel not in ("game", *iso.STAGING_NAMES) and not re.fullmatch(r"\.orien-prepare-[\w-]{6,24}/payload", rel):
         raise ValueError("清理记录的目标无效。")
     original = iso._check_path(folder / rel, allow_missing=True)
     retired = iso._check_path(folder / RETIRED, allow_missing=True)
@@ -499,7 +500,8 @@ def retire_old_games(source, cache, game, legacy):
                 if sources is None:
                     sources = {p.relative_to(source).as_posix() for p in iso._source_members(source)}
                 files, directories = _snapshot(source, sources, old, folder in legacy)
-                plans.append((folder, {"source": str(source), "cache": str(cache), "folder": str(folder),
+                plans.append((folder, {"source": str(iso.display_path(source)), "cache": str(iso.display_path(cache)),
+                                       "folder": str(iso.display_path(folder)),
                                        "directoryId": old.stat().st_ino,
                                        "target": old.relative_to(folder).as_posix(), "files": files,
                                        "directories": directories}))

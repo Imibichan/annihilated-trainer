@@ -19,7 +19,7 @@ class UiTests
         var windowType = assembly.GetType("TrainerWindow");
         using (var form = (Form)Activator.CreateInstance(windowType))
         {
-            Check(form.Text.Contains("v1.6.1"), "version");
+            Check(form.Text.Contains("v1.6.2"), "version");
             var tabs = (TabControl)form.Controls[0];
             var tabHandle = tabs.Handle;
             Check(tabs.TabPages.Count == 3, "CG tab present alongside the two existing tabs");

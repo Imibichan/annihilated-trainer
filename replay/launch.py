@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(1, str(HERE.parent))
 from replay.isolation import (AA, MARKER, _check_path, _overlap, atomic_json, build_folder_name, launch_environment,
-                              local_low, prepare_copy, restore_members, source_stamp, verify_copy)
+                              display_path, io_path, local_low, prepare_copy, restore_members, source_stamp, verify_copy)
 
 
 def file_sha(path):
@@ -24,7 +24,7 @@ def file_sha(path):
 
 
 def cache_folder(source):
-    identity = hashlib.sha256(os.path.normcase(str(source.resolve())).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(os.path.normcase(str(display_path(source.resolve()))).encode()).hexdigest()[:16]
     return Path(os.environ["LOCALAPPDATA"]) / "OrienWorkshop" / "AnnihilatedReplay" / ("v16-" + identity)
 
 
@@ -47,7 +47,7 @@ def compatibility_report(cache, generation_name, report, *, show):
     font_warning = report.get("fontWarning")
     path = _check_path(cache / "replay-compatibility.txt", allow_missing=True)
     summary = f"当前可播放 {report['scenes']} 段剧情、{report['artworks']} 幅独立画稿。"
-    lines = ["原作剧情回放 V1.6.1 兼容性报告", summary, "本次副本目录 " + report["gameRoot"]]
+    lines = ["原作剧情回放 V1.6.2 兼容性报告", summary, "本次副本目录 " + report["gameRoot"]]
     if excluded:
         lines.extend(["", "本版游戏中未开放的回放入口"] + [f"{key}　{value}" for key, value in sorted(excluded.items())])
     if presets:
@@ -96,9 +96,9 @@ def compatibility_report(cache, generation_name, report, *, show):
             if notify_font:
                 details.append(notify_font)
             details.append(f"完整说明位于\n{path}\n\n点击确定启动回放。")
-            ctypes.windll.user32.MessageBoxW(None, "\n\n".join(details), "原作剧情回放 V1.6.1", 64)
+            ctypes.windll.user32.MessageBoxW(None, "\n\n".join(details), "原作剧情回放 V1.6.2", 64)
             atomic_json(notice, {"seen": signature})
-    return str(path)
+    return str(display_path(path))
 
 
 @contextmanager
@@ -193,8 +193,9 @@ def main():
     args = parser.parse_args()
     from replay.language import sync_replay_language
     from replay.migration import check_running_games, legacy_folders, retire_old_games
-    source = _check_path(args.game)
-    cache = _check_path(args.cache or cache_folder(source), allow_missing=True)
+    source = _check_path(io_path(args.game))
+    cache = _check_path(io_path(args.cache or cache_folder(source)), allow_missing=True)
+    fallback = io_path(args.stock_fallback) if args.stock_fallback else None
     if _overlap(cache, source) or _overlap(cache, local_low()):
         raise ValueError("回放数据目录必须独立于原版游戏。")
     with ExitStack() as locks:
@@ -205,12 +206,12 @@ def main():
             locks.enter_context(session_lock(folder))
         check_running_games(cache, legacy)
         current = generation(cache, source, args.index)
-        game, report = prepare(source, current/"game", args.index, args.stock_fallback)
+        game, report = prepare(source, current/"game", args.index, fallback)
         if generation(cache, source, args.index) != current:
             raise ValueError("准备期间游戏文件发生变化，请重试。")
         locale = sync_replay_language(game)
         migration = retire_old_games(source, cache, game, legacy)
-        report = {**report, "gameRoot": str(game.root), "profile": str(game.profile), "migration": migration,
+        report = {**report, "gameRoot": str(display_path(game.root)), "profile": str(game.profile), "migration": migration,
                   "replayLocale": locale}
         report["compatibilityReport"] = compatibility_report(cache, current.name, report, show=not args.prepare_only)
         if args.prepare_only:
@@ -220,10 +221,10 @@ def main():
         log = _check_path(cache / "replay-player.log", allow_missing=True)
         if log.exists() and (not log.is_file() or log.stat().st_nlink != 1):
             raise ValueError("回放日志不属于此目录。")
-        command = [str(game.executable), "-logFile", str(log)]
+        command = [str(display_path(game.executable)), "-logFile", str(display_path(log))]
         if args.windowed:
             command += ["-screen-fullscreen","0","-screen-width","960","-screen-height","540"]
-        result = subprocess.run(command, cwd=game.root, env=launch_environment(), check=False)
+        result = subprocess.run(command, cwd=display_path(game.root), env=launch_environment(), check=False)
         if result.returncode:
             raise RuntimeError(f"回放游戏退出，代码 {result.returncode}。日志位于 {cache/'replay-player.log'}")
     return 0
@@ -235,5 +236,5 @@ if __name__ == "__main__":
     except Exception as error:
         if sys.stderr:
             raise
-        ctypes.windll.user32.MessageBoxW(None, str(error), "原作剧情回放 V1.6.1", 16)
+        ctypes.windll.user32.MessageBoxW(None, str(error), "原作剧情回放 V1.6.2", 16)
         sys.exit(1)

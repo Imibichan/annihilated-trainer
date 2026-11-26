@@ -32,6 +32,8 @@ V14_HASHES = {
     AA + "catalog.bin": "905917be4f3f2fedd0bab4d02d8c42a1c8001329a84006322c2279a145901215",
 }
 MARKER = ".orien-replay-copy.json"
+STAGING = ".g"
+STAGING_NAMES = (STAGING, ".game.building")
 MARKER_LIMIT = 4 * 1024 * 1024
 STATE = ".annihilated-cg-gallery"
 SOURCE_COMPANY = "DeathKumiai"
@@ -78,6 +80,32 @@ def local_low():
         ctypes.windll.ole32.CoTaskMemFree(folder)
 
 
+def display_path(path):
+    """Use normal Windows paths for persisted identities, player arguments and reports."""
+    path = Path(path)
+    if os.name != "nt":
+        return path
+    name = str(path)
+    if name.upper().startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + name[8:])
+    if name.startswith("\\\\?\\") and re.match(r"^[A-Za-z]:\\", name[4:]):
+        return Path(name[4:])
+    if name.startswith(("\\\\?\\", "\\\\.\\")):
+        raise ValueError("请选择本地磁盘目录或网络共享目录。")
+    return path
+
+
+def io_path(path):
+    """Anchor once so every child, including temporary Unity bundles, uses wide Win32 file I/O."""
+    absolute = Path(os.path.abspath(display_path(path)))
+    if os.name != "nt":
+        return absolute
+    name = str(absolute)
+    if name.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + name[2:])
+    return Path("\\\\?\\" + name)
+
+
 def _check_path(path, *, allow_missing=False):
     """Reject symlinks and Windows junctions, including those in parent directories."""
     path = Path(os.path.abspath(path))
@@ -120,6 +148,7 @@ def atomic_json(path, value, *, temp_dir=None):
 
 
 def _overlap(first, second):
+    first, second = display_path(first), display_path(second)
     return first.is_relative_to(second) or second.is_relative_to(first)
 
 
@@ -342,7 +371,7 @@ def _same_directory(recorded, actual):
     if not isinstance(recorded, str) or not Path(recorded).is_absolute():
         return False
     try:
-        candidate = _check_path(recorded)
+        candidate = _check_path(io_path(recorded))
         return candidate.samefile(actual)
     except (OSError, ValueError):
         return False
@@ -467,7 +496,8 @@ def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=Non
     stock, expected_hashes, gallery_baseline = _gallery_inputs(source, stock_fallback)
     stamp = source_stamp(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    stage = _check_path(destination.with_name("." + destination.name + ".building"), allow_missing=True)
+    stage_name = STAGING if destination.name == "game" else "." + destination.name + ".building"
+    stage = _check_path(destination.with_name(stage_name), allow_missing=True)
     paths = {p.relative_to(source).as_posix(): p for p in _source_members(source)}
     title_file, = (name for name in expected_hashes if name.endswith(".bundle"))
     if stage.exists():
@@ -476,7 +506,7 @@ def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=Non
             raise ValueError("回放临时目录的记录过大。")
         saved = json.loads(marker_path.read_bytes())
         company = saved.get("company", "")
-        if (saved.get("schema") != 2 or Path(saved.get("root", "")) != destination or
+        if (saved.get("schema") != 2 or display_path(saved.get("root", "")) != display_path(destination) or
                 not _same_directory(saved.get("source"), source) or saved.get("sourceBuild") != stamp or
                 saved.get("directoryId") != stage.stat().st_ino or not re.fullmatch(r"Or16[0-9a-f]{7}", company)):
             raise ValueError("回放临时目录的归属无法核实。")
@@ -485,7 +515,7 @@ def prepare_copy(source, destination, *, stock_fallback=None, program_inputs=Non
     else:
         company = _new_company()
     configs = _private_configs(source, company)
-    marker = {"schema": 2, "root": str(destination), "source": str(source), "sourceBuild": stamp,
+    marker = {"schema": 2, "root": str(display_path(destination)), "source": str(display_path(source)), "sourceBuild": stamp,
               "company": company, "galleryBaseline": gallery_baseline, "copiedFiles": sorted(paths),
               "programInputs": program_inputs, "scriptFile": script_file, "fontFile": font_file,
               "managerSha256": hashlib.sha256(configs[MANAGERS]).hexdigest(),
